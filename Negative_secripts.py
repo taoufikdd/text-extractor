@@ -3,6 +3,7 @@ import time
 import io
 import xml.etree.ElementTree as ET
 import urllib.parse
+from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
@@ -11,13 +12,20 @@ import streamlit as st
 st.set_page_config(
     page_title="Text Extractor Tool",
     page_icon="📝",
-    layout="centered"
+    layout="wide"
 )
 
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 })
+
+# --- القائمة الجانبية لاختيار نوع الاستخراج ---
+st.sidebar.header("⚙️ Extraction Settings")
+extraction_mode = st.sidebar.radio(
+    "Choose Output Format:",
+    ("Clean Text Only", "Text with Domains & Links")
+)
 
 def is_valid_html_url(url):
     url_lower = url.lower()
@@ -48,7 +56,7 @@ def clean_text_strictly(raw_text):
         return '\n'.join(clean_lines[:50])
     return None
 
-def extract_clean_text_from_url(url):
+def extract_content_from_url(url, mode):
     try:
         res = session.get(url, timeout=8)
         if res.status_code != 200 or 'text/html' not in res.headers.get('Content-Type', '').lower():
@@ -61,7 +69,15 @@ def extract_clean_text_from_url(url):
         paragraphs = soup.find_all('p')
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        return clean_text_strictly(raw_text)
+        cleaned = clean_text_strictly(raw_text)
+        if not cleaned:
+            return None
+            
+        if mode == "Clean Text Only":
+            return cleaned
+        else:
+            domain = urlparse(url).netloc
+            return f"Domain: {domain}\nURL: {url}\n\nContent:\n{cleaned}"
     except Exception:
         return None
 
@@ -102,15 +118,15 @@ def search_google_news_rss(query, max_results=10):
         pass
     return links
 
-def fetch_wikimedia_family(domain, query, target_count):
-    texts = []
+def fetch_wikimedia_family(domain, query, target_count, mode):
+    results = []
     try:
         search_url = f"https://en.{domain}.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&srlimit={target_count*2}&format=json"
         res = session.get(search_url, timeout=8)
         if res.status_code == 200:
             items = res.json().get('query', {}).get('search', [])
             for item in items:
-                if len(texts) >= target_count:
+                if len(results) >= target_count:
                     break
                 pid = item.get('pageid')
                 if not pid:
@@ -123,14 +139,18 @@ def fetch_wikimedia_family(domain, query, target_count):
                     raw_extract = pdata.get('extract', '')
                     cleaned = clean_text_strictly(raw_extract)
                     if cleaned:
-                        texts.append(cleaned)
+                        if mode == "Clean Text Only":
+                            results.append(cleaned)
+                        else:
+                            page_url = f"https://en.{domain}.org/?curid={pid}"
+                            results.append(f"Domain: en.{domain}.org\nURL: {page_url}\n\nContent:\n{cleaned}")
                 time.sleep(0.1)
     except Exception:
         pass
-    return texts
+    return results
 
-def fetch_arxiv_abstracts(query, target_count):
-    texts = []
+def fetch_arxiv_abstracts(query, target_count, mode):
+    results = []
     try:
         url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&start=0&max_results={target_count}"
         res = session.get(url, timeout=8)
@@ -139,15 +159,20 @@ def fetch_arxiv_abstracts(query, target_count):
             ns = {'atom': 'http://www.w3.org/2005/Atom'}
             for entry in root.findall('atom:entry', ns):
                 summary = entry.find('atom:summary', ns)
+                link = entry.find('atom:id', ns)
                 if summary is not None and summary.text:
                     cleaned = clean_text_strictly(summary.text)
                     if cleaned:
-                        texts.append(cleaned)
+                        if mode == "Clean Text Only":
+                            results.append(cleaned)
+                        else:
+                            arxiv_url = link.text if link is not None else "https://arxiv.org"
+                            results.append(f"Domain: arxiv.org\nURL: {arxiv_url}\n\nContent:\n{cleaned}")
     except Exception:
         pass
-    return texts
+    return results
 
-def fetch_wiki_random_article():
+def fetch_wiki_random_article(mode):
     try:
         url = "https://en.wikipedia.org/w/api.php?action=query&generator=random&grnnamespace=0&prop=extracts&explaintext=1&grnlimit=1&format=json"
         res = session.get(url, timeout=8)
@@ -155,7 +180,13 @@ def fetch_wiki_random_article():
             pages = res.json().get('query', {}).get('pages', {})
             for pid, pdata in pages.items():
                 raw_extract = pdata.get('extract', '')
-                return clean_text_strictly(raw_extract)
+                cleaned = clean_text_strictly(raw_extract)
+                if cleaned:
+                    if mode == "Clean Text Only":
+                        return cleaned
+                    else:
+                        page_url = f"https://en.wikipedia.org/?curid={pid}"
+                        return f"Domain: en.wikipedia.org\nURL: {page_url}\n\nContent:\n{cleaned}"
     except Exception:
         pass
     return None
@@ -214,13 +245,13 @@ if submitted:
                     if url in visited_urls:
                         continue
                     visited_urls.add(url)
-                    text = extract_clean_text_from_url(url)
-                    if text:
-                        all_results.append(text)
+                    res_data = extract_content_from_url(url, extraction_mode)
+                    if res_data:
+                        all_results.append(res_data)
                         saved_for_kw += 1
                     time.sleep(0.1)
 
-            # Extended
+            # Extended - Google News
             if enable_extended and saved_for_kw < target_count:
                 news_urls = search_google_news_rss(kw, target_count - saved_for_kw)
                 for url in news_urls:
@@ -229,24 +260,26 @@ if submitted:
                     if url in visited_urls:
                         continue
                     visited_urls.add(url)
-                    text = extract_clean_text_from_url(url)
-                    if text:
-                        all_results.append(text)
+                    res_data = extract_content_from_url(url, extraction_mode)
+                    if res_data:
+                        all_results.append(res_data)
                         saved_for_kw += 1
 
+            # Extended - Wikimedia
             if enable_extended and saved_for_kw < target_count:
                 for domain in ["wikibooks", "wikiquote"]:
                     if saved_for_kw >= target_count:
                         break
-                    w_texts = fetch_wikimedia_family(domain, kw, target_count - saved_for_kw)
+                    w_texts = fetch_wikimedia_family(domain, kw, target_count - saved_for_kw, extraction_mode)
                     for wt in w_texts:
                         if saved_for_kw >= target_count:
                             break
                         all_results.append(wt)
                         saved_for_kw += 1
 
+            # Extended - ArXiv
             if enable_extended and saved_for_kw < target_count:
-                arxiv_texts = fetch_arxiv_abstracts(kw, target_count - saved_for_kw)
+                arxiv_texts = fetch_arxiv_abstracts(kw, target_count - saved_for_kw, extraction_mode)
                 for at in arxiv_texts:
                     if saved_for_kw >= target_count:
                         break
@@ -255,18 +288,18 @@ if submitted:
 
             # Wiki
             if saved_for_kw < target_count:
-                wiki_texts = fetch_wikimedia_family("wikipedia", kw, target_count - saved_for_kw)
+                wiki_texts = fetch_wikimedia_family("wikipedia", kw, target_count - saved_for_kw, extraction_mode)
                 for wt in wiki_texts:
                     if saved_for_kw >= target_count:
                         break
                     all_results.append(wt)
                     saved_for_kw += 1
 
-            # Fallback
+            # Fallback - Random Wiki
             if saved_for_kw < target_count:
                 retry_count = 0
                 while saved_for_kw < target_count and retry_count < 50:
-                    r_text = fetch_wiki_random_article()
+                    r_text = fetch_wiki_random_article(extraction_mode)
                     if r_text:
                         all_results.append(r_text)
                         saved_for_kw += 1
@@ -276,7 +309,12 @@ if submitted:
 
             progress_bar.progress((idx + 1) / total_keywords)
 
-        status_box.success(f"🎉 Extraction Completed! Total texts collected: **{len(all_results)}**")
+        status_box.success(f"🎉 Extraction Completed! Total items collected: **{len(all_results)}**")
+        
+        # عرض النتائج مباشرة داخل الصفحة
+        st.subheader("📋 Extracted Output Preview:")
+        for res in all_results[:10]:  # عرض أول 10 نتائج فقط كمعاينة
+            st.text_area("Result Preview", value=res, height=150)
         
         # تجهيز ملف Negative.txt للتنزيل المباشر
         file_content = "\n\n__SEP__\n\n".join(all_results)
