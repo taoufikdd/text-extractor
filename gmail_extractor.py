@@ -8,7 +8,7 @@ import streamlit as st
 st.set_page_config(page_title="Gmail Content Extractor", page_icon="📧", layout="wide")
 
 st.title("📧 Gmail Content Extractor")
-st.write("استخراج محتوى الإيميلات بنص صافي وتصفية متطورة")
+st.write("استخراج محتوى الإيميلات بنص صافي وتجميعها مع فاصل `__SEP__`")
 
 # Sidebar Configuration
 st.sidebar.header("🔑 Gmail Credentials")
@@ -17,7 +17,7 @@ app_password = st.sidebar.text_input("App Password", type="password", placeholde
 
 st.sidebar.header("⚙️ Search Filters")
 status_option = st.sidebar.selectbox("Email Status", ["UNREAD", "READ", "ALL"], index=0)
-max_emails = st.sidebar.number_input("Max Emails to Fetch", min_value=1, max_value=50, value=5)
+max_emails = st.sidebar.number_input("Max Emails to Fetch", min_value=1, max_value=100, value=5)
 only_important = st.sidebar.checkbox("Only Important Emails", value=False)
 
 keywords_input = st.sidebar.text_input("Keywords (comma separated)", value="reset password, County Expands")
@@ -94,17 +94,14 @@ def extract_gmail_emails():
         email_ids = response[0].split()
         latest_email_ids = email_ids[-max_emails:][::-1]
         
-        results = []
+        extracted_bodies = []
         for e_id in latest_email_ids:
             status, msg_data = mail.fetch(e_id, "(RFC822)")
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
-                    subject = decode_mime_header(msg.get("Subject"))
-                    from_sender = decode_mime_header(msg.get("From"))
-                    date = msg.get("Date")
-                    
                     body_text = ""
+                    
                     if msg.is_multipart():
                         for part in msg.walk():
                             content_type = part.get_content_type()
@@ -128,10 +125,11 @@ def extract_gmail_emails():
                             else:
                                 body_text = raw_data
 
-                    results.append({"subject": subject, "from": from_sender, "date": date, "body": body_text})
+                    if body_text.strip():
+                        extracted_bodies.append(body_text.strip())
 
         mail.logout()
-        return results
+        return extracted_bodies
 
     except Exception as e:
         st.error(f"❌ Error connecting to Gmail: {e}")
@@ -143,10 +141,25 @@ if st.button("🚀 Extract Emails", type="primary"):
         st.error("Please provide both Email Address and App Password in the sidebar!")
     else:
         with st.spinner("Fetching emails..."):
-            emails = extract_gmail_emails()
-            if emails:
-                st.success(f"Successfully extracted {len(emails)} emails!")
-                for i, e in enumerate(emails, 1):
-                    with st.expander(f"📌 #{i} - {e['subject']} ({e['date']})", expanded=True):
-                        st.write(f"**From:** `{e['from']}`")
-                        st.text_area("Content:", value=e['body'], height=250, key=f"email_{i}")
+            bodies = extract_gmail_emails()
+            if bodies:
+                st.success(f"Successfully extracted {len(bodies)} emails!")
+                
+                # تجميع جميع النصوص ومفروقة بـ __SEP__
+                combined_text = "\n\n__SEP__\n\n".join(bodies)
+                
+                # إظهار الناتج فـ Text Area كبير فـ نفس الصفحة
+                st.subheader("📄 Extracted Output:")
+                st.text_area(
+                    label="All extracted email contents separated by __SEP__",
+                    value=combined_text,
+                    height=450
+                )
+                
+                # زِرّ لتنزيل الملف مباشرة
+                st.download_button(
+                    label="📥 Download Output File (.txt)",
+                    data=combined_text,
+                    file_name="extracted_emails.txt",
+                    mime="text/plain"
+                )
