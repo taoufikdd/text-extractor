@@ -294,7 +294,7 @@ with tab3:
         "🔥 DANGER: Wipe ALL Instances"
     ])
     
-    # 1. تحديد السيرفرات بواسطة Checkbox داخل Form
+    # 1. تحديد السيرفرات بواسطة Checkbox مع أزرار التحكم بالكل
     if del_mode == "☑️ Checkbox Selection (Select & Delete)":
         
         # حفظ السيرفرات في Session State لمنع التعتيم وإعادة التحديث المتكرر
@@ -306,6 +306,21 @@ with tab3:
         if not instances:
             st.info("No active instances found in this account.")
         else:
+            # أزرار تحديد / إلغاء تحديد الكل
+            col_btn1, col_btn2, _ = st.columns([1, 1, 3])
+            with col_btn1:
+                if st.button("✅ Select All"):
+                    for inst in instances:
+                        st.session_state[f"form_chk_{inst.get('id')}"] = True
+                    st.rerun()
+            with col_btn2:
+                if st.button("❌ Unselect All"):
+                    for inst in instances:
+                        st.session_state[f"form_chk_{inst.get('id')}"] = False
+                    st.rerun()
+
+            st.markdown("---")
+
             with st.form("delete_servers_form"):
                 st.write("Select the servers you want to delete:")
                 
@@ -316,8 +331,15 @@ with tab3:
                     label = inst.get("label", "N/A")
                     region = inst.get("region", "N/A")
                     
+                    chk_key = f"form_chk_{inst_id}"
+                    if chk_key not in st.session_state:
+                        st.session_state[chk_key] = False
+
                     checkbox_states[inst_id] = (
-                        st.checkbox(f"🖥️ **{label}** | IP: `{ip}` | Region: `{region}`", key=f"form_chk_{inst_id}"),
+                        st.checkbox(
+                            f"🖥️ **{label}** | IP: `{ip}` | Region: `{region}`", 
+                            key=chk_key
+                        ),
                         ip
                     )
                 
