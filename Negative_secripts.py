@@ -27,6 +27,11 @@ extraction_mode = st.sidebar.radio(
     ("Clean Text Only", "Text with Domains & Links")
 )
 
+def has_domain_or_link(text):
+    """التحقق من وجود رابط أو دومين داخل النص"""
+    pattern = r'(https?://\S+|www\.\S+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}\b)'
+    return bool(re.search(pattern, text))
+
 def is_valid_html_url(url):
     url_lower = url.lower()
     bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.gz', '.png', '.jpg', '.jpeg', '.mp4']
@@ -37,8 +42,10 @@ def is_valid_html_url(url):
         return False
     return True
 
-def clean_text_strictly(raw_text, preserve_links=False):
+def clean_text_strictly(raw_text, mode):
     clean_lines = []
+    preserve_links = (mode == "Text with Domains & Links")
+    
     for line in raw_text.splitlines():
         line_str = line.strip()
         if len(line_str) < 30:
@@ -50,8 +57,8 @@ def clean_text_strictly(raw_text, preserve_links=False):
             # الاحتفاظ بالروابط والدومينات الطبيعية داخل النص
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—:/\?%&=#@\_]', '', line_str)
         else:
-            # تنظيف الروابط والدومينات تماماً من داخل النص
-            line_str = re.sub(r'https?://\S+|www\.\S+', '', line_str)
+            # مسح الروابط والدومينات تماماً من داخل النص
+            line_str = re.sub(r'https?://\S+|www\.\S+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}\b', '', line_str)
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
 
         sanitized_line = ' '.join(sanitized_line.split())
@@ -59,9 +66,16 @@ def clean_text_strictly(raw_text, preserve_links=False):
         if len(sanitized_line) > 25:
             clean_lines.append(sanitized_line)
             
-    if clean_lines:
-        return '\n'.join(clean_lines[:50])
-    return None
+    if not clean_lines:
+        return None
+        
+    full_text = '\n'.join(clean_lines[:50])
+
+    # إذا كان وضع الروابط مفعلاً، نتحقق أن النص يحتوي فعلياً على رابط/دومين وإلا نرفضه
+    if preserve_links and not has_domain_or_link(full_text):
+        return None
+
+    return full_text
 
 def extract_content_from_url(url, mode):
     try:
@@ -73,11 +87,17 @@ def extract_content_from_url(url, mode):
         for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe", "button"]):
             tag.decompose()
             
+        # تحويل عناوين الروابط HTML إلى نصوص ظاهرة تحتوي على الرابط نفسه
+        if mode == "Text with Domains & Links":
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if href.startswith('http'):
+                    a.replace_with(f" {a.get_text()} ({href}) ")
+
         paragraphs = soup.find_all('p')
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        preserve = (mode == "Text with Domains & Links")
-        return clean_text_strictly(raw_text, preserve_links=preserve)
+        return clean_text_strictly(raw_text, mode)
     except Exception:
         return None
 
@@ -137,8 +157,7 @@ def fetch_wikimedia_family(domain, query, target_count, mode):
                     pages = c_res.json().get('query', {}).get('pages', {})
                     pdata = pages.get(str(pid), {})
                     raw_extract = pdata.get('extract', '')
-                    preserve = (mode == "Text with Domains & Links")
-                    cleaned = clean_text_strictly(raw_extract, preserve_links=preserve)
+                    cleaned = clean_text_strictly(raw_extract, mode)
                     if cleaned:
                         results.append(cleaned)
                 time.sleep(0.1)
@@ -157,8 +176,7 @@ def fetch_arxiv_abstracts(query, target_count, mode):
             for entry in root.findall('atom:entry', ns):
                 summary = entry.find('atom:summary', ns)
                 if summary is not None and summary.text:
-                    preserve = (mode == "Text with Domains & Links")
-                    cleaned = clean_text_strictly(summary.text, preserve_links=preserve)
+                    cleaned = clean_text_strictly(summary.text, mode)
                     if cleaned:
                         results.append(cleaned)
     except Exception:
@@ -173,8 +191,7 @@ def fetch_wiki_random_article(mode):
             pages = res.json().get('query', {}).get('pages', {})
             for pid, pdata in pages.items():
                 raw_extract = pdata.get('extract', '')
-                preserve = (mode == "Text with Domains & Links")
-                return clean_text_strictly(raw_extract, preserve_links=preserve)
+                return clean_text_strictly(raw_extract, mode)
     except Exception:
         pass
     return None
@@ -186,10 +203,10 @@ def generate_similar_queries(original_kw):
         clean_kw,
         f"letter {clean_kw}",
         f"about {clean_kw}",
-        f"story {clean_kw}",
-        f"history of {clean_kw}",
-        "personal letter email",
-        "english prose text essay"
+        f"website {clean_kw}",
+        f"official site {clean_kw}",
+        "personal letter email website",
+        "english prose text links"
     ]
     return list(dict.fromkeys([v for v in variations if v]))
 
