@@ -37,7 +37,7 @@ def is_valid_html_url(url):
         return False
     return True
 
-def clean_text_strictly(raw_text):
+def clean_text_strictly(raw_text, preserve_links=False):
     clean_lines = []
     for line in raw_text.splitlines():
         line_str = line.strip()
@@ -46,7 +46,14 @@ def clean_text_strictly(raw_text):
         if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==']):
             continue
 
-        sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
+        if preserve_links:
+            # الاحتفاظ بالروابط والدومينات الطبيعية داخل النص
+            sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—:/\?%&=#@\_]', '', line_str)
+        else:
+            # تنظيف الروابط والدومينات تماماً من داخل النص
+            line_str = re.sub(r'https?://\S+|www\.\S+', '', line_str)
+            sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
+
         sanitized_line = ' '.join(sanitized_line.split())
         
         if len(sanitized_line) > 25:
@@ -69,15 +76,8 @@ def extract_content_from_url(url, mode):
         paragraphs = soup.find_all('p')
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        cleaned = clean_text_strictly(raw_text)
-        if not cleaned:
-            return None
-            
-        if mode == "Clean Text Only":
-            return cleaned
-        else:
-            domain = urlparse(url).netloc
-            return f"Domain: {domain}\nURL: {url}\n\nContent:\n{cleaned}"
+        preserve = (mode == "Text with Domains & Links")
+        return clean_text_strictly(raw_text, preserve_links=preserve)
     except Exception:
         return None
 
@@ -137,13 +137,10 @@ def fetch_wikimedia_family(domain, query, target_count, mode):
                     pages = c_res.json().get('query', {}).get('pages', {})
                     pdata = pages.get(str(pid), {})
                     raw_extract = pdata.get('extract', '')
-                    cleaned = clean_text_strictly(raw_extract)
+                    preserve = (mode == "Text with Domains & Links")
+                    cleaned = clean_text_strictly(raw_extract, preserve_links=preserve)
                     if cleaned:
-                        if mode == "Clean Text Only":
-                            results.append(cleaned)
-                        else:
-                            page_url = f"https://en.{domain}.org/?curid={pid}"
-                            results.append(f"Domain: en.{domain}.org\nURL: {page_url}\n\nContent:\n{cleaned}")
+                        results.append(cleaned)
                 time.sleep(0.1)
     except Exception:
         pass
@@ -159,15 +156,11 @@ def fetch_arxiv_abstracts(query, target_count, mode):
             ns = {'atom': 'http://www.w3.org/2005/Atom'}
             for entry in root.findall('atom:entry', ns):
                 summary = entry.find('atom:summary', ns)
-                link = entry.find('atom:id', ns)
                 if summary is not None and summary.text:
-                    cleaned = clean_text_strictly(summary.text)
+                    preserve = (mode == "Text with Domains & Links")
+                    cleaned = clean_text_strictly(summary.text, preserve_links=preserve)
                     if cleaned:
-                        if mode == "Clean Text Only":
-                            results.append(cleaned)
-                        else:
-                            arxiv_url = link.text if link is not None else "https://arxiv.org"
-                            results.append(f"Domain: arxiv.org\nURL: {arxiv_url}\n\nContent:\n{cleaned}")
+                        results.append(cleaned)
     except Exception:
         pass
     return results
@@ -180,13 +173,8 @@ def fetch_wiki_random_article(mode):
             pages = res.json().get('query', {}).get('pages', {})
             for pid, pdata in pages.items():
                 raw_extract = pdata.get('extract', '')
-                cleaned = clean_text_strictly(raw_extract)
-                if cleaned:
-                    if mode == "Clean Text Only":
-                        return cleaned
-                    else:
-                        page_url = f"https://en.wikipedia.org/?curid={pid}"
-                        return f"Domain: en.wikipedia.org\nURL: {page_url}\n\nContent:\n{cleaned}"
+                preserve = (mode == "Text with Domains & Links")
+                return clean_text_strictly(raw_extract, preserve_links=preserve)
     except Exception:
         pass
     return None
@@ -313,7 +301,7 @@ if submitted:
         
         # عرض النتائج مباشرة داخل الصفحة
         st.subheader("📋 Extracted Output Preview:")
-        for res in all_results[:10]:  # عرض أول 10 نتائج فقط كمعاينة
+        for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=150)
         
         # تجهيز ملف Negative.txt للتنزيل المباشر
