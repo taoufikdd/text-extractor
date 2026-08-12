@@ -2,32 +2,38 @@ import imaplib
 import email
 from email.header import decode_header
 from bs4 import BeautifulSoup
+import streamlit as st
 
-# ==============================================================================
-# CONFIGURATION / الإعدادات
-# ==============================================================================
-EMAIL_USER = "your_email@gmail.com"     # الإيميل ديالك
-APP_PASSWORD = "xxxx xxxx xxxx xxxx"    # App Password من جوجل
+# ==================== STREAMLIT UI ====================
+st.set_page_config(page_title="Gmail Content Extractor", page_icon="📧", layout="wide")
 
-# 1. الكلمات المفتاحية (خليه خاوي [] إذا بغيتي يستخرج أي إيميل)
-KEYWORDS = ["reset password", "County Expands"]  
+st.title("📧 Gmail Content Extractor")
+st.write("استخراج محتوى الإيميلات بنص صافي وتصفية متطورة")
 
-# 2. عدد الإيميلات المراد استخراجها
-MAX_EMAILS = 10                         
+# Sidebar Configuration
+st.sidebar.header("🔑 Gmail Credentials")
+email_user = st.sidebar.text_input("Gmail Address", value="", placeholder="example@gmail.com")
+app_password = st.sidebar.text_input("App Password", type="password", placeholder="16-digit password")
 
-# 3. حالة الإيميل: 'UNREAD' (غير المقروءة) | 'READ' (المقروءة) | 'ALL' (الكل)
-EMAIL_STATUS = "UNREAD"                 
+st.sidebar.header("⚙️ Search Filters")
+status_option = st.sidebar.selectbox("Email Status", ["UNREAD", "READ", "ALL"], index=0)
+max_emails = st.sidebar.number_input("Max Emails to Fetch", min_value=1, max_value=50, value=5)
+only_important = st.sidebar.checkbox("Only Important Emails", value=False)
 
-# 4. تصفية حسب الإيميلات المهمة فقط: True أو False
-ONLY_IMPORTANT = False                  
+keywords_input = st.sidebar.text_input("Keywords (comma separated)", value="reset password, County Expands")
+keywords = [kw.strip() for kw in keywords_input.split(",") if kw.strip()]
 
-# 5. التحديد بالتاريخ (نظام YYYY/MM/DD) - دير None إذا ما بغيتيش تحدد التاريخ
-START_DATE = "2026/01/01"   # تاريخ البداية (after:YYYY/MM/DD)
-END_DATE = "2026/08/12"     # تاريخ النهاية (before:YYYY/MM/DD)
-# ==============================================================================
+use_date = st.sidebar.checkbox("Filter by Date Range", value=False)
+start_date, end_date = None, None
+if use_date:
+    col1, col2 = st.sidebar.columns(2)
+    start_d = col1.date_input("Start Date")
+    end_d = col2.date_input("End Date")
+    start_date = start_d.strftime("%Y/%m/%d")
+    end_date = end_d.strftime("%Y/%m/%d")
 
+# ==================== HELPER FUNCTIONS ====================
 def clean_html_content(html_content):
-    """ تنظيف كود HTML واستخراج النص الصافي """
     soup = BeautifulSoup(html_content, "html.parser")
     for script in soup(["script", "style"]):
         script.extract()
@@ -36,7 +42,6 @@ def clean_html_content(html_content):
     return "\n".join(lines)
 
 def decode_mime_header(header_value):
-    """ فك ترميز العناوين """
     if not header_value:
         return ""
     decoded_list = decode_header(header_value)
@@ -49,26 +54,20 @@ def decode_mime_header(header_value):
     return header_str
 
 def build_gmail_query(keywords, status, important_only, start_date, end_date):
-    """ بناء استعلام البحث الخاص بـ Gmail """
     query_parts = []
-    
-    # حالة القراءة (Read/Unread)
-    if status.upper() == "UNREAD":
+    if status == "UNREAD":
         query_parts.append("is:unread")
-    elif status.upper() == "READ":
+    elif status == "READ":
         query_parts.append("is:read")
         
-    # المهمة (Important)
     if important_only:
         query_parts.append("is:important")
         
-    # نطاق التاريخ (Date Range)
     if start_date:
         query_parts.append(f"after:{start_date}")
     if end_date:
         query_parts.append(f"before:{end_date}")
         
-    # الكلمات المفتاحية (Keywords)
     if keywords:
         kw_query = " OR ".join([f'"{kw}"' for kw in keywords])
         query_parts.append(f"({kw_query})")
@@ -78,14 +77,10 @@ def build_gmail_query(keywords, status, important_only, start_date, end_date):
 def extract_gmail_emails():
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(EMAIL_USER, APP_PASSWORD)
+        mail.login(email_user, app_password)
         mail.select("inbox")
         
-        search_query = build_gmail_query(
-            KEYWORDS, EMAIL_STATUS, ONLY_IMPORTANT, START_DATE, END_DATE
-        )
-        
-        print(f"[*] Searching inbox with filter: {search_query}")
+        search_query = build_gmail_query(keywords, status_option, only_important, start_date, end_date)
         
         if search_query == "ALL":
             status, response = mail.search(None, "ALL")
@@ -93,31 +88,27 @@ def extract_gmail_emails():
             status, response = mail.search(None, f'X-GM-RAW "{search_query}"')
         
         if status != "OK" or not response[0]:
-            print("[!] No emails found matching your criteria.")
+            st.warning("⚠️ No emails found matching your criteria.")
             return []
 
         email_ids = response[0].split()
-        latest_email_ids = email_ids[-MAX_EMAILS:][::-1]
+        latest_email_ids = email_ids[-max_emails:][::-1]
         
         results = []
-
         for e_id in latest_email_ids:
             status, msg_data = mail.fetch(e_id, "(RFC822)")
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     msg = email.message_from_bytes(response_part[1])
-                    
                     subject = decode_mime_header(msg.get("Subject"))
                     from_sender = decode_mime_header(msg.get("From"))
                     date = msg.get("Date")
                     
                     body_text = ""
-                    
                     if msg.is_multipart():
                         for part in msg.walk():
                             content_type = part.get_content_type()
                             content_disposition = str(part.get("Content-Disposition"))
-                            
                             if content_type == "text/plain" and "attachment" not in content_disposition:
                                 payload = part.get_payload(decode=True)
                                 if payload:
@@ -137,30 +128,25 @@ def extract_gmail_emails():
                             else:
                                 body_text = raw_data
 
-                    results.append({
-                        "subject": subject,
-                        "from": from_sender,
-                        "date": date,
-                        "body": body_text
-                    })
+                    results.append({"subject": subject, "from": from_sender, "date": date, "body": body_text})
 
         mail.logout()
         return results
 
     except Exception as e:
-        print(f"[!] Error: {e}")
+        st.error(f"❌ Error connecting to Gmail: {e}")
         return []
 
-if __name__ == "__main__":
-    emails = extract_gmail_emails()
-    print(f"\n[+] Extracted {len(emails)} emails:\n")
-    
-    for i, e in enumerate(emails, 1):
-        print("=" * 60)
-        print(f"RESULT #{i}")
-        print(f"Subject : {e['subject']}")
-        print(f"From    : {e['from']}")
-        print(f"Date    : {e['date']}")
-        print("-" * 60)
-        print(e['body'])
-        print("=" * 60 + "\n")
+# ==================== MAIN RUN BUTTON ====================
+if st.button("🚀 Extract Emails", type="primary"):
+    if not email_user or not app_password:
+        st.error("Please provide both Email Address and App Password in the sidebar!")
+    else:
+        with st.spinner("Fetching emails..."):
+            emails = extract_gmail_emails()
+            if emails:
+                st.success(f"Successfully extracted {len(emails)} emails!")
+                for i, e in enumerate(emails, 1):
+                    with st.expander(f"📌 #{i} - {e['subject']} ({e['date']})", expanded=True):
+                        st.write(f"**From:** `{e['from']}`")
+                        st.text_area("Content:", value=e['body'], height=250, key=f"email_{i}")
