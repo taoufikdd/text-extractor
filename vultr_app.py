@@ -8,6 +8,7 @@ import urllib.parse
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==========================================
 # 1. إعدادات الصفحة والتصاميم
@@ -128,6 +129,47 @@ def wait_for_ip(api_key, instance_id, proxies, max_retries=20):
         time.sleep(3)
     return "0.0.0.0"
 
+# --- وظائف تنفيذيّة مسرّعة (Parallel API Executions) ---
+def deploy_single_server(counter, code, os_id, current_api_key, current_proxies):
+    hostname = f"vultr-server-{counter}"
+    headers = {
+        "Authorization": f"Bearer {current_api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "region": code,
+        "plan": PLAN_ID,
+        "os_id": os_id,
+        "user_scheme": "root",
+        "password": DEFAULT_ROOT_PASSWORD,
+        "user_data": USER_DATA_B64,
+        "hostname": hostname,
+        "label": hostname,
+        "backups": "disabled"
+    }
+    
+    try:
+        res = requests.post("https://api.vultr.com/v2/instances", headers=headers, json=payload, proxies=current_proxies, timeout=15)
+        if res.status_code == 202:
+            inst_id = res.json().get("instance", {}).get("id")
+            ip = wait_for_ip(current_api_key, inst_id, current_proxies)
+            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
+            return True, formatted, None
+        else:
+            return False, None, res.text
+    except Exception as e:
+        return False, None, str(e)
+
+def delete_single_server(inst_id, current_api_key, current_proxies):
+    headers = {"Authorization": f"Bearer {current_api_key}"}
+    try:
+        res = requests.delete(f"https://api.vultr.com/v2/instances/{inst_id}", headers=headers, proxies=current_proxies, timeout=12)
+        if res.status_code == 204:
+            return True, inst_id
+        return False, inst_id
+    except Exception:
+        return False, inst_id
+
 # ==========================================
 # 4. الواجهة والSidebar
 # ==========================================
@@ -211,7 +253,7 @@ with tab1:
     else:
         st.info("No active instances found or failed to connect.")
 
-# --- TAB 2: إنشاء سيرفرات جديدة ---
+# --- TAB 2: إنشاء سيرفرات جديدة (مسرّعة بـ Threads) ---
 with tab2:
     st.subheader("Deploy New Servers")
     
@@ -239,53 +281,41 @@ with tab2:
                 status_box = st.empty()
                 progress_bar = st.progress(0)
                 
-                results = []
+                tasks = []
                 counter = 0
-                
                 for idx, code in enumerate(selected_codes):
                     count_for_reg = base_per + (1 if idx < remainder else 0)
                     for _ in range(count_for_reg):
                         counter += 1
-                        hostname = f"vultr-server-{counter}"
-                        status_box.info(f"⏳ Creating server {counter}/{server_count} in region **{code}**...")
+                        tasks.append((counter, code))
+                
+                results = []
+                completed_count = 0
+                status_box.info(f"⚡ Deploying {server_count} server(s) in parallel...")
+
+                # تنفيذ بالتوازي باستخدام Threads
+                with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
+                    futures = [
+                        executor.submit(deploy_single_server, c, reg, os_id, current_api_key, current_proxies)
+                        for c, reg in tasks
+                    ]
+                    
+                    for future in as_completed(futures):
+                        success, formatted_res, err = future.result()
+                        completed_count += 1
+                        progress_bar.progress(completed_count / server_count)
                         
-                        headers = {
-                            "Authorization": f"Bearer {current_api_key}",
-                            "Content-Type": "application/json"
-                        }
-                        payload = {
-                            "region": code,
-                            "plan": PLAN_ID,
-                            "os_id": os_id,
-                            "user_scheme": "root",
-                            "password": DEFAULT_ROOT_PASSWORD,
-                            "user_data": USER_DATA_B64,
-                            "hostname": hostname,
-                            "label": hostname,
-                            "backups": "disabled"
-                        }
-                        
-                        try:
-                            res = requests.post("https://api.vultr.com/v2/instances", headers=headers, json=payload, proxies=current_proxies, timeout=15)
-                            if res.status_code == 202:
-                                inst_id = res.json().get("instance", {}).get("id")
-                                ip = wait_for_ip(current_api_key, inst_id, current_proxies)
-                                formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
-                                results.append(formatted)
-                                
-                                with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
-                                    f_out.write(formatted + "\n")
-                            else:
-                                st.error(f"Failed to create server: {res.text}")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                        
-                        progress_bar.progress(counter / server_count)
+                        if success and formatted_res:
+                            results.append(formatted_res)
+                            with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
+                                f_out.write(formatted_res + "\n")
+                        else:
+                            st.error(f"Deployment Error: {err}")
                 
                 status_box.success("🎉 Deployment Complete!")
                 st.text_area("Created Servers List (ip,port,user,pass):", value="\n".join(results), height=150)
 
-# --- TAB 3: حذف السيرفرات ---
+# --- TAB 3: حذف السيرفرات (مسرّعة بـ Threads) ---
 with tab3:
     st.subheader("Delete Instances")
     del_mode = st.radio("Delete Option:", [
@@ -294,10 +324,9 @@ with tab3:
         "🔥 DANGER: Wipe ALL Instances"
     ])
     
-    # 1. تحديد السيرفرات بواسطة Checkbox مع أزرار التحكم بالكل
+    # 1. تحديد السيرفرات بواسطة Checkbox
     if del_mode == "☑️ Checkbox Selection (Select & Delete)":
         
-        # حفظ السيرفرات في Session State لمنع التعتيم وإعادة التحديث المتكرر
         if f"cached_instances_{selected_acc_name}" not in st.session_state or st.button("🔄 Reload Server List"):
             st.session_state[f"cached_instances_{selected_acc_name}"] = get_all_instances(current_api_key, current_proxies)
             
@@ -306,7 +335,6 @@ with tab3:
         if not instances:
             st.info("No active instances found in this account.")
         else:
-            # أزرار تحديد / إلغاء تحديد الكل
             col_btn1, col_btn2, _ = st.columns([1, 1, 3])
             with col_btn1:
                 if st.button("✅ Select All"):
@@ -352,19 +380,25 @@ with tab3:
                 if not selected_to_delete:
                     st.warning("Please select at least one server to delete.")
                 else:
-                    headers = {"Authorization": f"Bearer {current_api_key}"}
+                    status_del = st.empty()
+                    status_del.info(f"⚡ Deleting {len(selected_to_delete)} server(s) in parallel...")
+                    
                     success_count = 0
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = {
+                            executor.submit(delete_single_server, inst_id, current_api_key, current_proxies): ip 
+                            for inst_id, ip in selected_to_delete
+                        }
+                        for future in as_completed(futures):
+                            ip = futures[future]
+                            success, _ = future.result()
+                            if success:
+                                st.success(f"✅ Deleted server: {ip}")
+                                success_count += 1
+                            else:
+                                st.error(f"❌ Failed to delete server: {ip}")
                     
-                    for inst_id, ip in selected_to_delete:
-                        res = requests.delete(f"https://api.vultr.com/v2/instances/{inst_id}", headers=headers, proxies=current_proxies)
-                        if res.status_code == 204:
-                            st.success(f"✅ Deleted server: {ip}")
-                            success_count += 1
-                        else:
-                            st.error(f"❌ Failed to delete server: {ip}")
-                    
-                    st.success(f"Process finished! Total deleted: {success_count}")
-                    # إعادة تحديث القائمة المخزنة بعد الحذف
+                    status_del.success(f"Process finished! Total deleted: {success_count}")
                     st.session_state[f"cached_instances_{selected_acc_name}"] = get_all_instances(current_api_key, current_proxies)
                     time.sleep(1)
                     st.rerun()
@@ -380,35 +414,46 @@ with tab3:
                 instances = get_all_instances(current_api_key, current_proxies)
                 ip_to_id = {inst.get("main_ip"): inst.get("id") for inst in instances if inst.get("main_ip")}
                 
-                headers = {"Authorization": f"Bearer {current_api_key}"}
-                success_count = 0
-                for target_ip in raw_ips:
-                    if target_ip in ip_to_id:
-                        inst_id = ip_to_id[target_ip]
-                        res = requests.delete(f"https://api.vultr.com/v2/instances/{inst_id}", headers=headers, proxies=current_proxies)
-                        if res.status_code == 204:
-                            st.success(f"Deleted IP: {target_ip}")
-                            success_count += 1
-                        else:
-                            st.error(f"Failed to delete {target_ip}")
-                    else:
-                        st.warning(f"IP {target_ip} not found in active servers.")
-                st.info(f"Process complete. Deleted {success_count} server(s).")
+                targets = [(ip_to_id[target_ip], target_ip) for target_ip in raw_ips if target_ip in ip_to_id]
+                missing = [target_ip for target_ip in raw_ips if target_ip not in ip_to_id]
                 
-    # 3. خيار مسح الحساب بالكامل
+                for m_ip in missing:
+                    st.warning(f"IP {m_ip} not found in active servers.")
+                
+                if targets:
+                    success_count = 0
+                    with ThreadPoolExecutor(max_workers=10) as executor:
+                        futures = {
+                            executor.submit(delete_single_server, inst_id, current_api_key, current_proxies): target_ip 
+                            for inst_id, target_ip in targets
+                        }
+                        for future in as_completed(futures):
+                            target_ip = futures[future]
+                            success, _ = future.result()
+                            if success:
+                                st.success(f"Deleted IP: {target_ip}")
+                                success_count += 1
+                            else:
+                                st.error(f"Failed to delete {target_ip}")
+                    st.info(f"Process complete. Deleted {success_count} server(s).")
+                
+    # 3. خيار مسح الحساب بالكامل بالتوازي
     else:
         st.error("⚠️ WARNING: This will permanently delete ALL instances in the selected account!")
         confirm_code = st.text_input("Type 'DELETE ALL' to confirm:")
         if st.button("🔥 WIPE ALL SERVERS NOW"):
             if confirm_code == "DELETE ALL":
                 instances = get_all_instances(current_api_key, current_proxies)
-                headers = {"Authorization": f"Bearer {current_api_key}"}
                 deleted = 0
-                for inst in instances:
-                    inst_id = inst.get("id")
-                    res = requests.delete(f"https://api.vultr.com/v2/instances/{inst_id}", headers=headers, proxies=current_proxies)
-                    if res.status_code == 204:
-                        deleted += 1
+                with ThreadPoolExecutor(max_workers=15) as executor:
+                    futures = [
+                        executor.submit(delete_single_server, inst.get("id"), current_api_key, current_proxies)
+                        for inst in instances
+                    ]
+                    for future in as_completed(futures):
+                        success, _ = future.result()
+                        if success:
+                            deleted += 1
                 st.success(f"Total Wiped: {deleted} instances.")
                 time.sleep(1)
                 st.rerun()
