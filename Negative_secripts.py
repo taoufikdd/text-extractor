@@ -5,13 +5,6 @@ import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
-# استيراد googlesearch
-try:
-    from googlesearch import search as google_search
-    HAS_GOOGLE = True
-except ImportError:
-    HAS_GOOGLE = False
-
 st.set_page_config(
     page_title="Advanced Web Text Extractor Tool",
     page_icon="📝",
@@ -21,15 +14,15 @@ st.set_page_config(
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5"
 })
 
 st.sidebar.header("⚙️ Extraction Settings")
 
-# 1. إضافة اختيار محرك البحث
 search_engine_choice = st.sidebar.radio(
     "Choose Search Engine:",
-    ("Google (Primary)", "Auto (Google + DuckDuckGo Fallback)", "DuckDuckGo Only")
+    ("DuckDuckGo (Recommended / Fast)", "Google (Scraped)", "Auto (Fallback)")
 )
 
 extraction_mode = st.sidebar.radio(
@@ -37,17 +30,17 @@ extraction_mode = st.sidebar.radio(
     ("Text with Domains & Links", "Clean Text Only")
 )
 
-def is_valid_html_url(url):
+def is_valid_url(url):
     url_lower = url.lower()
-    bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.gz', '.png', '.jpg', '.jpeg', '.mp4']
-    if any(url_lower.endswith(ext) or ext in url_lower for ext in bad_exts):
+    bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.png', '.jpg', '.jpeg', '.mp4']
+    if any(url_lower.endswith(ext) for ext in bad_exts):
         return False
-    bad_domains = ['google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']
+    bad_domains = ['google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com']
     if any(domain in url_lower for domain in bad_domains):
         return False
     return True
 
-def clean_text_strictly(raw_text, mode):
+def clean_extracted_text(raw_text, mode):
     clean_lines = []
     preserve_links = (mode == "Text with Domains & Links")
     
@@ -55,7 +48,7 @@ def clean_text_strictly(raw_text, mode):
         line_str = line.strip()
         if len(line_str) < 15:
             continue
-        if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==']):
+        if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'document.', '{', '}', '<', '>']):
             continue
 
         if preserve_links:
@@ -71,8 +64,7 @@ def clean_text_strictly(raw_text, mode):
     if not clean_lines:
         return None
         
-    full_text = '\n'.join(clean_lines[:40])
-    return full_text
+    return '\n'.join(clean_lines[:40])
 
 def extract_content_from_url(url, mode):
     try:
@@ -89,33 +81,19 @@ def extract_content_from_url(url, mode):
                 if href.startswith('http') and not any(bd in href for bd in ['facebook', 'twitter', 'instagram']):
                     a.replace_with(f" {anchor_text} ({href}) ")
 
-        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe", "button"]):
+        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe"]):
             tag.decompose()
 
         paragraphs = soup.find_all(['p', 'div', 'article'])
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        return clean_text_strictly(raw_text, mode)
+        return clean_extracted_text(raw_text, mode)
     except Exception:
         return None
 
-# --- محركات البحث ---
-
-def search_google(query, max_results=10):
-    """البحث المباشر عبر Google"""
-    links = []
-    if not HAS_GOOGLE:
-        return links
-    try:
-        for url in google_search(query, num_results=max_results, lang="en"):
-            if is_valid_html_url(url) and url not in links:
-                links.append(url)
-    except Exception:
-        pass
-    return links
+# --- محركات البحث المباشرة المحدثة ---
 
 def search_ddg_html(query, max_results=15):
-    """البحث عبر DuckDuckGo"""
     links = []
     try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
@@ -129,7 +107,7 @@ def search_ddg_html(query, max_results=15):
                 elif href.startswith('/l/?uddg='):
                     href = urllib.parse.unquote(href.split('/l/?uddg=')[1].split('&')[0])
                 
-                if href.startswith('http') and is_valid_html_url(href) and href not in links:
+                if href.startswith('http') and is_valid_url(href) and href not in links:
                     links.append(href)
                     if len(links) >= max_results:
                         break
@@ -137,17 +115,36 @@ def search_ddg_html(query, max_results=15):
         pass
     return links
 
-def fetch_search_results(query, engine_setting, max_results=10):
-    """دالة توجيه البحث على حسب الاختيار"""
+def search_google_custom(query, max_results=10):
+    links = []
+    try:
+        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&num={max_results}&hl=en"
+        res = session.get(url, timeout=7)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if '/url?q=' in href:
+                    clean_url = href.split('/url?q=')[1].split('&')[0]
+                    clean_url = urllib.parse.unquote(clean_url)
+                    if clean_url.startswith('http') and is_valid_url(clean_url) and clean_url not in links:
+                        links.append(clean_url)
+                        if len(links) >= max_results:
+                            break
+    except Exception:
+        pass
+    return links
+
+def fetch_urls(query, engine_setting, max_results=10):
     urls = []
-    if engine_setting == "Google (Primary)":
-        urls = search_google(query, max_results)
-    elif engine_setting == "DuckDuckGo Only":
+    if engine_setting == "DuckDuckGo (Recommended / Fast)":
         urls = search_ddg_html(query, max_results)
-    else: # Auto (Google + Fallback)
-        urls = search_google(query, max_results)
-        if not urls: # إذا Google عطى 0 نتائج بسباب البلوك، كيدوز لـ DDG
-            urls = search_ddg_html(query, max_results)
+    elif engine_setting == "Google (Scraped)":
+        urls = search_google_custom(query, max_results)
+    else: # Auto
+        urls = search_ddg_html(query, max_results)
+        if not urls:
+            urls = search_google_custom(query, max_results)
     return urls
 
 def extract_queries_from_sample_text(sample_text):
@@ -156,13 +153,11 @@ def extract_queries_from_sample_text(sample_text):
     
     if len(clean_sample) < 40:
         queries.append(f'{clean_sample}')
-        queries.append(f'{clean_sample} website')
-        queries.append(f'{clean_sample} school')
+        queries.append(f'"{clean_sample}"')
     else:
         lines = [l.strip() for l in clean_sample.splitlines() if len(l.strip()) > 10]
         if lines:
             queries.append(f'"{lines[0][:30]}"')
-            queries.append(lines[0][:40])
 
     queries.extend([
         'dear students school handbook',
@@ -196,7 +191,7 @@ if submitted:
             st.stop()
         for kw in keywords:
             search_queries.append(f'{kw}')
-            search_queries.append(f'{kw} website')
+            search_queries.append(f'{kw} letter')
     else:
         if not sample_text_input.strip():
             st.error("Please paste a reference text first.")
@@ -216,7 +211,7 @@ if submitted:
             
         status_box.info(f"⏳ Searching ({search_engine_choice}) for: **'{q}'**...")
         
-        urls = fetch_search_results(q, search_engine_choice, max_results=10)
+        urls = fetch_urls(q, search_engine_choice, max_results=10)
         
         for url in urls:
             if len(all_results) >= target_count:
@@ -228,7 +223,7 @@ if submitted:
             res_data = extract_content_from_url(url, extraction_mode)
             if res_data:
                 all_results.append(res_data)
-            time.sleep(0.3)
+            time.sleep(0.2)
 
         progress_bar.progress((idx + 1) / total_q)
 
@@ -236,7 +231,7 @@ if submitted:
     
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found. Try broader keywords or change search engine.")
+        st.warning("No matching results found. Try broader keywords or switch engine to DuckDuckGo.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
