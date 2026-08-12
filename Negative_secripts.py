@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 import streamlit as st
 
 st.set_page_config(
-    page_title="Advanced Text Extractor Tool",
+    page_title="Advanced Web Text Extractor Tool",
     page_icon="📝",
     layout="wide"
 )
@@ -64,9 +64,10 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
         
     full_text = '\n'.join(clean_lines[:50])
 
+    # تصفية اختيارية للترحاب
     if force_dear_prefix:
-        first_part = full_text[:150].lower()
-        if not any(w in first_part for w in ['dear', 'hi', 'hello', 'greetings', 'welcome']):
+        first_part = full_text[:200].lower()
+        if not any(w in first_part for w in ['dear', 'hi', 'hello', 'greetings', 'welcome', 'students', 'families', 'parents']):
             return None
 
     if preserve_links and not has_domain_or_link(full_text):
@@ -93,7 +94,15 @@ def extract_content_from_url(url, mode, force_dear=False):
         paragraphs = soup.find_all('p')
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        return clean_text_strictly(raw_text, mode, force_dear_prefix=force_dear)
+        # محاولة أولى بالشروط القاسية
+        extracted = clean_text_strictly(raw_text, mode, force_dear_prefix=force_dear)
+        if extracted:
+            return extracted
+            
+        # محاولة ثانية مرنة في حال تفعيل الخيار لتجنب النتيجة الصفريّة
+        if force_dear:
+            return clean_text_strictly(raw_text, mode, force_dear_prefix=False)
+            
     except Exception:
         return None
 
@@ -121,19 +130,27 @@ def search_ddg_html(query, max_results=15):
 
 def extract_queries_from_sample_text(sample_text):
     queries = []
-    if "dear" in sample_text.lower():
-        queries.append('dear students handbook website')
-        queries.append('dear parents elementary school letter')
-        queries.append('welcome to our school principal letter')
+    # استخراج كلمات مميزة من النص المرجعي لبناء استعلامات حقيقية
+    clean_sample = sample_text.lower()
+    
+    if "handbook" in clean_sample or "elementary" in clean_sample:
+        queries.append('student handbook dear families website')
+        queries.append('elementary school handbook principal letter')
+        queries.append('dear students and families school website')
+        queries.append('school policies handbook http')
+    else:
+        # استخراج أول جملة مفيدة
+        lines = [l.strip() for l in sample_text.splitlines() if len(l.strip()) > 20]
+        if lines:
+            queries.append(f'"{lines[0][:40]}"')
     
     queries.extend([
-        'school handbook principal letter website',
-        'elementary school student handbook dear parents',
-        'school principal welcoming letter website'
+        'school principal welcoming letter website',
+        'dear parents students school handbook'
     ])
     return list(dict.fromkeys(queries))
 
-# --- UI Streamlit ---
+# --- Streamlit UI ---
 
 st.title("🚀 Advanced Web Text Extractor")
 
@@ -142,10 +159,10 @@ input_type = st.radio("Choose Search Method:", ("Keywords Mode", "Similar Text R
 force_dear_option = False
 if input_type == "Keywords Mode":
     keywords_input = st.text_input("Enter Keywords (comma separated):", placeholder="e.g. dear Brian, dear Students")
-    force_dear_option = st.checkbox("Require text to contain 'Dear / Hi / Welcome' near start", value=False)
+    force_dear_option = st.checkbox("Prefer texts starting with greetings (Dear/Welcome)", value=False)
 else:
     sample_text_input = st.text_area("Paste Reference Text Here:", height=180, placeholder="Paste example letter/text here...")
-    force_dear_option = st.checkbox("Require texts to contain greeting (Dear/Welcome) like sample", value=False)
+    force_dear_option = st.checkbox("Prefer texts containing greetings like sample", value=False)
 
 target_count = st.number_input("Number of texts to extract:", min_value=1, max_value=200, value=10, step=5)
 
@@ -181,7 +198,7 @@ if submitted:
             
         status_box.info(f"⏳ Searching web for: **'{q}'**...")
         
-        urls = search_ddg_html(q, max_results=15)
+        urls = search_ddg_html(q, max_results=20)
         
         for url in urls:
             if len(all_results) >= target_count:
@@ -201,7 +218,7 @@ if submitted:
     
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found. Try unchecking the 'Require text to contain Dear/Welcome' checkbox.")
+        st.warning("No matching results found. Try using simpler keywords.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
