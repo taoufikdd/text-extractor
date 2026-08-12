@@ -1,14 +1,11 @@
 import re
 import time
-import io
-import xml.etree.ElementTree as ET
 import urllib.parse
 from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
 
-# ضبط إعدادات الصفحة
 st.set_page_config(
     page_title="Advanced Text Extractor Tool",
     page_icon="📝",
@@ -17,18 +14,17 @@ st.set_page_config(
 
 session = requests.Session()
 session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9"
 })
 
-# --- القائمة الجانبية لاختيار نوع الاستخراج ---
 st.sidebar.header("⚙️ Extraction Settings")
 extraction_mode = st.sidebar.radio(
     "Choose Output Format:",
-    ("Clean Text Only", "Text with Domains & Links")
+    ("Text with Domains & Links", "Clean Text Only")
 )
 
 def has_domain_or_link(text):
-    """التحقق من وجود رابط أو دومين داخل النص"""
     pattern = r'(https?://\S+|www\.\S+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}\b)'
     return bool(re.search(pattern, text))
 
@@ -37,7 +33,7 @@ def is_valid_html_url(url):
     bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.gz', '.png', '.jpg', '.jpeg', '.mp4']
     if any(url_lower.endswith(ext) or ext in url_lower for ext in bad_exts):
         return False
-    bad_domains = ['bing.com', 'yahoo.com', 'duckduckgo.com', 'google.com', 'yimg.com', 'youtube.com', 'facebook.com']
+    bad_domains = ['bing.com', 'yahoo.com', 'duckduckgo.com', 'google.com', 'yimg.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']
     if any(domain in url_lower for domain in bad_domains):
         return False
     return True
@@ -48,7 +44,7 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
     
     for line in raw_text.splitlines():
         line_str = line.strip()
-        if len(line_str) < 25:
+        if len(line_str) < 20:
             continue
         if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==']):
             continue
@@ -60,7 +56,7 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
 
         sanitized_line = ' '.join(sanitized_line.split())
-        if len(sanitized_line) > 20:
+        if len(sanitized_line) > 15:
             clean_lines.append(sanitized_line)
             
     if not clean_lines:
@@ -68,13 +64,11 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
         
     full_text = '\n'.join(clean_lines[:50])
 
-    # المرونة في التحقق من وجود Dear / Greeting في بداية الفقرات الأولى
     if force_dear_prefix:
-        first_few_words = " ".join(full_text.split()[:15])
-        if not re.search(r'\b(dear|hi|hello|greetings|welcome|to our)\b', first_few_words, re.IGNORECASE):
+        first_part = full_text[:150].lower()
+        if not any(w in first_part for w in ['dear', 'hi', 'hello', 'greetings', 'welcome']):
             return None
 
-    # التحقق من وجود رابط/دومين
     if preserve_links and not has_domain_or_link(full_text):
         return None
 
@@ -82,7 +76,7 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
 
 def extract_content_from_url(url, mode, force_dear=False):
     try:
-        res = session.get(url, timeout=8)
+        res = session.get(url, timeout=6)
         if res.status_code != 200 or 'text/html' not in res.headers.get('Content-Type', '').lower():
             return None
             
@@ -103,18 +97,20 @@ def extract_content_from_url(url, mode, force_dear=False):
     except Exception:
         return None
 
-def search_ddg_lite(query, max_results=20):
+def search_ddg_html(query, max_results=15):
     links = []
     try:
-        url = "https://lite.duckduckgo.com/lite/"
-        data = {'q': query}
-        res = session.post(url, data=data, timeout=8)
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        res = session.get(url, timeout=7)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
-            for a in soup.find_all('a', class_='result-snippet'):
-                href = a.get('href', '')
+            for a in soup.find_all('a', class_='result__url'):
+                href = a.get('href', '').strip()
                 if href.startswith('//'):
                     href = 'https:' + href
+                elif href.startswith('/l/?uddg='):
+                    href = urllib.parse.unquote(href.split('/l/?uddg=')[1].split('&')[0])
+                
                 if href.startswith('http') and is_valid_html_url(href) and href not in links:
                     links.append(href)
                     if len(links) >= max_results:
@@ -123,69 +119,21 @@ def search_ddg_lite(query, max_results=20):
         pass
     return links
 
-def search_google_news_rss(query, max_results=10):
-    links = []
-    try:
-        rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(query)}&hl=en-US&gl=US&ceid=US:en"
-        res = session.get(rss_url, timeout=8)
-        if res.status_code == 200:
-            root = ET.fromstring(res.content)
-            for item in root.findall('.//item'):
-                link = item.find('link').text if item.find('link') is not None else None
-                if link and is_valid_html_url(link):
-                    links.append(link)
-                    if len(links) >= max_results:
-                        break
-    except Exception:
-        pass
-    return links
-
-def fetch_wikimedia_family(domain, query, target_count, mode, force_dear=False):
-    results = []
-    try:
-        search_url = f"https://en.{domain}.org/w/api.php?action=query&list=search&srsearch={urllib.parse.quote(query)}&srlimit={target_count*2}&format=json"
-        res = session.get(search_url, timeout=8)
-        if res.status_code == 200:
-            items = res.json().get('query', {}).get('search', [])
-            for item in items:
-                if len(results) >= target_count:
-                    break
-                pid = item.get('pageid')
-                if not pid:
-                    continue
-                content_url = f"https://en.{domain}.org/w/api.php?action=query&prop=extracts&explaintext=1&pageids={pid}&format=json"
-                c_res = session.get(content_url, timeout=8)
-                if c_res.status_code == 200:
-                    pages = c_res.json().get('query', {}).get('pages', {})
-                    pdata = pages.get(str(pid), {})
-                    raw_extract = pdata.get('extract', '')
-                    cleaned = clean_text_strictly(raw_extract, mode, force_dear_prefix=force_dear)
-                    if cleaned:
-                        results.append(cleaned)
-                time.sleep(0.1)
-    except Exception:
-        pass
-    return results
-
 def extract_queries_from_sample_text(sample_text):
-    """استخراج استعلامات دقيقة ومباشرة من النص المرجعي"""
     queries = []
-    
-    # البحث عن كلمات مفتاحية قوية
     if "dear" in sample_text.lower():
-        queries.append('"Dear Students" "https"')
-        queries.append('"Dear Parents" "http"')
-        queries.append('"Dear Families" handbook "website"')
-        queries.append('"Dear" principal letter "https"')
+        queries.append('dear students handbook website')
+        queries.append('dear parents elementary school letter')
+        queries.append('welcome to our school principal letter')
     
     queries.extend([
-        '"Dear Students and Families" handbook',
-        '"Welcome to our school" handbook "http"',
-        'school handbook "principal" "website"'
+        'school handbook principal letter website',
+        'elementary school student handbook dear parents',
+        'school principal welcoming letter website'
     ])
     return list(dict.fromkeys(queries))
 
-# --- واجهة المستخدم (Streamlit UI) ---
+# --- UI Streamlit ---
 
 st.title("🚀 Advanced Web Text Extractor")
 
@@ -194,12 +142,12 @@ input_type = st.radio("Choose Search Method:", ("Keywords Mode", "Similar Text R
 force_dear_option = False
 if input_type == "Keywords Mode":
     keywords_input = st.text_input("Enter Keywords (comma separated):", placeholder="e.g. dear Brian, dear Students")
-    force_dear_option = st.checkbox("Require text to contain 'Dear / Hi / Welcome' at start", value=False)
+    force_dear_option = st.checkbox("Require text to contain 'Dear / Hi / Welcome' near start", value=False)
 else:
-    sample_text_input = st.text_area("Paste Reference Text Here:", height=200, placeholder="Paste example letter/text here...")
-    force_dear_option = st.checkbox("Require texts to contain greeting (Dear/Welcome) like sample", value=True)
+    sample_text_input = st.text_area("Paste Reference Text Here:", height=180, placeholder="Paste example letter/text here...")
+    force_dear_option = st.checkbox("Require texts to contain greeting (Dear/Welcome) like sample", value=False)
 
-target_count = st.number_input("Number of texts to extract:", min_value=1, max_value=200, value=20, step=5)
+target_count = st.number_input("Number of texts to extract:", min_value=1, max_value=200, value=10, step=5)
 
 submitted = st.button("Start Extraction ⚡")
 
@@ -212,8 +160,8 @@ if submitted:
             st.error("Please enter at least one keyword.")
             st.stop()
         for kw in keywords:
-            search_queries.append(f'"{kw}" "http"')
-            search_queries.append(f'"{kw}" website')
+            search_queries.append(f'{kw} website')
+            search_queries.append(f'{kw} letter')
     else:
         if not sample_text_input.strip():
             st.error("Please paste a reference text first.")
@@ -231,41 +179,21 @@ if submitted:
         if len(all_results) >= target_count:
             break
             
-        status_box.info(f"⏳ Searching sources for: **'{q}'**...")
+        status_box.info(f"⏳ Searching web for: **'{q}'**...")
         
-        # 1. DuckDuckGo Lite
-        urls = search_ddg_lite(q, max_results=20)
+        urls = search_ddg_html(q, max_results=15)
+        
         for url in urls:
             if len(all_results) >= target_count:
                 break
             if url in visited_urls:
                 continue
             visited_urls.add(url)
+            
             res_data = extract_content_from_url(url, extraction_mode, force_dear=force_dear_option)
             if res_data:
                 all_results.append(res_data)
             time.sleep(0.1)
-
-        # 2. Google News
-        if len(all_results) < target_count:
-            news_urls = search_google_news_rss(q, max_results=10)
-            for url in news_urls:
-                if len(all_results) >= target_count:
-                    break
-                if url in visited_urls:
-                    continue
-                visited_urls.add(url)
-                res_data = extract_content_from_url(url, extraction_mode, force_dear=force_dear_option)
-                if res_data:
-                    all_results.append(res_data)
-
-        # 3. Wikibooks
-        if len(all_results) < target_count:
-            w_texts = fetch_wikimedia_family("wikibooks", q, 5, extraction_mode, force_dear=force_dear_option)
-            for wt in w_texts:
-                if len(all_results) >= target_count:
-                    break
-                all_results.append(wt)
 
         progress_bar.progress((idx + 1) / total_q)
 
@@ -273,7 +201,7 @@ if submitted:
     
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found. Try unchecking the strict 'Dear' requirement checkbox.")
+        st.warning("No matching results found. Try unchecking the 'Require text to contain Dear/Welcome' checkbox.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
