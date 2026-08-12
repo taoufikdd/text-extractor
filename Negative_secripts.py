@@ -1,10 +1,16 @@
 import re
 import time
 import urllib.parse
-from urllib.parse import urlparse
 import requests
 from bs4 import BeautifulSoup
 import streamlit as st
+
+# استيراد googlesearch
+try:
+    from googlesearch import search as google_search
+    HAS_GOOGLE = True
+except ImportError:
+    HAS_GOOGLE = False
 
 st.set_page_config(
     page_title="Advanced Web Text Extractor Tool",
@@ -19,32 +25,35 @@ session.headers.update({
 })
 
 st.sidebar.header("⚙️ Extraction Settings")
+
+# 1. إضافة اختيار محرك البحث
+search_engine_choice = st.sidebar.radio(
+    "Choose Search Engine:",
+    ("Google (Primary)", "Auto (Google + DuckDuckGo Fallback)", "DuckDuckGo Only")
+)
+
 extraction_mode = st.sidebar.radio(
     "Choose Output Format:",
     ("Text with Domains & Links", "Clean Text Only")
 )
-
-def has_domain_or_link(text):
-    pattern = r'(https?://\S+|www\.\S+|\b[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}\b)'
-    return bool(re.search(pattern, text))
 
 def is_valid_html_url(url):
     url_lower = url.lower()
     bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.zip', '.gz', '.png', '.jpg', '.jpeg', '.mp4']
     if any(url_lower.endswith(ext) or ext in url_lower for ext in bad_exts):
         return False
-    bad_domains = ['bing.com', 'yahoo.com', 'duckduckgo.com', 'google.com', 'yimg.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']
+    bad_domains = ['google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com']
     if any(domain in url_lower for domain in bad_domains):
         return False
     return True
 
-def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
+def clean_text_strictly(raw_text, mode):
     clean_lines = []
     preserve_links = (mode == "Text with Domains & Links")
     
     for line in raw_text.splitlines():
         line_str = line.strip()
-        if len(line_str) < 20:
+        if len(line_str) < 15:
             continue
         if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==']):
             continue
@@ -56,57 +65,57 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
 
         sanitized_line = ' '.join(sanitized_line.split())
-        if len(sanitized_line) > 15:
+        if len(sanitized_line) > 10:
             clean_lines.append(sanitized_line)
             
     if not clean_lines:
         return None
         
-    full_text = '\n'.join(clean_lines[:50])
-
-    # تصفية اختيارية للترحاب
-    if force_dear_prefix:
-        first_part = full_text[:200].lower()
-        if not any(w in first_part for w in ['dear', 'hi', 'hello', 'greetings', 'welcome', 'students', 'families', 'parents']):
-            return None
-
-    if preserve_links and not has_domain_or_link(full_text):
-        return None
-
+    full_text = '\n'.join(clean_lines[:40])
     return full_text
 
-def extract_content_from_url(url, mode, force_dear=False):
+def extract_content_from_url(url, mode):
     try:
         res = session.get(url, timeout=6)
         if res.status_code != 200 or 'text/html' not in res.headers.get('Content-Type', '').lower():
             return None
             
         soup = BeautifulSoup(res.text, 'html.parser')
-        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe", "button"]):
-            tag.decompose()
-            
+        
         if mode == "Text with Domains & Links":
             for a in soup.find_all('a', href=True):
                 href = a['href']
+                anchor_text = a.get_text().strip()
                 if href.startswith('http') and not any(bd in href for bd in ['facebook', 'twitter', 'instagram']):
-                    a.replace_with(f" {a.get_text()} ({href}) ")
+                    a.replace_with(f" {anchor_text} ({href}) ")
 
-        paragraphs = soup.find_all('p')
+        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe", "button"]):
+            tag.decompose()
+
+        paragraphs = soup.find_all(['p', 'div', 'article'])
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
-        # محاولة أولى بالشروط القاسية
-        extracted = clean_text_strictly(raw_text, mode, force_dear_prefix=force_dear)
-        if extracted:
-            return extracted
-            
-        # محاولة ثانية مرنة في حال تفعيل الخيار لتجنب النتيجة الصفريّة
-        if force_dear:
-            return clean_text_strictly(raw_text, mode, force_dear_prefix=False)
-            
+        return clean_text_strictly(raw_text, mode)
     except Exception:
         return None
 
+# --- محركات البحث ---
+
+def search_google(query, max_results=10):
+    """البحث المباشر عبر Google"""
+    links = []
+    if not HAS_GOOGLE:
+        return links
+    try:
+        for url in google_search(query, num_results=max_results, lang="en"):
+            if is_valid_html_url(url) and url not in links:
+                links.append(url)
+    except Exception:
+        pass
+    return links
+
 def search_ddg_html(query, max_results=15):
+    """البحث عبر DuckDuckGo"""
     links = []
     try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
@@ -128,41 +137,50 @@ def search_ddg_html(query, max_results=15):
         pass
     return links
 
+def fetch_search_results(query, engine_setting, max_results=10):
+    """دالة توجيه البحث على حسب الاختيار"""
+    urls = []
+    if engine_setting == "Google (Primary)":
+        urls = search_google(query, max_results)
+    elif engine_setting == "DuckDuckGo Only":
+        urls = search_ddg_html(query, max_results)
+    else: # Auto (Google + Fallback)
+        urls = search_google(query, max_results)
+        if not urls: # إذا Google عطى 0 نتائج بسباب البلوك، كيدوز لـ DDG
+            urls = search_ddg_html(query, max_results)
+    return urls
+
 def extract_queries_from_sample_text(sample_text):
     queries = []
-    # استخراج كلمات مميزة من النص المرجعي لبناء استعلامات حقيقية
-    clean_sample = sample_text.lower()
+    clean_sample = sample_text.strip()
     
-    if "handbook" in clean_sample or "elementary" in clean_sample:
-        queries.append('student handbook dear families website')
-        queries.append('elementary school handbook principal letter')
-        queries.append('dear students and families school website')
-        queries.append('school policies handbook http')
+    if len(clean_sample) < 40:
+        queries.append(f'{clean_sample}')
+        queries.append(f'{clean_sample} website')
+        queries.append(f'{clean_sample} school')
     else:
-        # استخراج أول جملة مفيدة
-        lines = [l.strip() for l in sample_text.splitlines() if len(l.strip()) > 20]
+        lines = [l.strip() for l in clean_sample.splitlines() if len(l.strip()) > 10]
         if lines:
-            queries.append(f'"{lines[0][:40]}"')
-    
+            queries.append(f'"{lines[0][:30]}"')
+            queries.append(lines[0][:40])
+
     queries.extend([
-        'school principal welcoming letter website',
-        'dear parents students school handbook'
+        'dear students school handbook',
+        'dear parents elementary school',
+        'welcome students principal letter'
     ])
     return list(dict.fromkeys(queries))
 
-# --- Streamlit UI ---
+# --- UI Streamlit ---
 
 st.title("🚀 Advanced Web Text Extractor")
 
 input_type = st.radio("Choose Search Method:", ("Keywords Mode", "Similar Text Reference Mode"))
 
-force_dear_option = False
 if input_type == "Keywords Mode":
     keywords_input = st.text_input("Enter Keywords (comma separated):", placeholder="e.g. dear Brian, dear Students")
-    force_dear_option = st.checkbox("Prefer texts starting with greetings (Dear/Welcome)", value=False)
 else:
-    sample_text_input = st.text_area("Paste Reference Text Here:", height=180, placeholder="Paste example letter/text here...")
-    force_dear_option = st.checkbox("Prefer texts containing greetings like sample", value=False)
+    sample_text_input = st.text_area("Paste Reference Text Here:", height=150, placeholder="Paste example letter/text here...")
 
 target_count = st.number_input("Number of texts to extract:", min_value=1, max_value=200, value=10, step=5)
 
@@ -177,8 +195,8 @@ if submitted:
             st.error("Please enter at least one keyword.")
             st.stop()
         for kw in keywords:
+            search_queries.append(f'{kw}')
             search_queries.append(f'{kw} website')
-            search_queries.append(f'{kw} letter')
     else:
         if not sample_text_input.strip():
             st.error("Please paste a reference text first.")
@@ -196,9 +214,9 @@ if submitted:
         if len(all_results) >= target_count:
             break
             
-        status_box.info(f"⏳ Searching web for: **'{q}'**...")
+        status_box.info(f"⏳ Searching ({search_engine_choice}) for: **'{q}'**...")
         
-        urls = search_ddg_html(q, max_results=20)
+        urls = fetch_search_results(q, search_engine_choice, max_results=10)
         
         for url in urls:
             if len(all_results) >= target_count:
@@ -207,10 +225,10 @@ if submitted:
                 continue
             visited_urls.add(url)
             
-            res_data = extract_content_from_url(url, extraction_mode, force_dear=force_dear_option)
+            res_data = extract_content_from_url(url, extraction_mode)
             if res_data:
                 all_results.append(res_data)
-            time.sleep(0.1)
+            time.sleep(0.3)
 
         progress_bar.progress((idx + 1) / total_q)
 
@@ -218,7 +236,7 @@ if submitted:
     
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found. Try using simpler keywords.")
+        st.warning("No matching results found. Try broader keywords or change search engine.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
