@@ -48,7 +48,7 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
     
     for line in raw_text.splitlines():
         line_str = line.strip()
-        if len(line_str) < 30:
+        if len(line_str) < 25:
             continue
         if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==']):
             continue
@@ -60,7 +60,7 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
 
         sanitized_line = ' '.join(sanitized_line.split())
-        if len(sanitized_line) > 25:
+        if len(sanitized_line) > 20:
             clean_lines.append(sanitized_line)
             
     if not clean_lines:
@@ -68,11 +68,13 @@ def clean_text_strictly(raw_text, mode, force_dear_prefix=False):
         
     full_text = '\n'.join(clean_lines[:50])
 
-    # إذا اشترطنا تبدأ بـ Dear
-    if force_dear_prefix and not re.match(r'^(dear|hi|hello|greetings)\b', full_text, re.IGNORECASE):
-        return None
+    # المرونة في التحقق من وجود Dear / Greeting في بداية الفقرات الأولى
+    if force_dear_prefix:
+        first_few_words = " ".join(full_text.split()[:15])
+        if not re.search(r'\b(dear|hi|hello|greetings|welcome|to our)\b', first_few_words, re.IGNORECASE):
+            return None
 
-    # إذا كان وضع الروابط مفعلاً، نتحقق أن النص يحتوي فعلياً على رابط/دومين
+    # التحقق من وجود رابط/دومين
     if preserve_links and not has_domain_or_link(full_text):
         return None
 
@@ -91,7 +93,7 @@ def extract_content_from_url(url, mode, force_dear=False):
         if mode == "Text with Domains & Links":
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                if href.startswith('http'):
+                if href.startswith('http') and not any(bd in href for bd in ['facebook', 'twitter', 'instagram']):
                     a.replace_with(f" {a.get_text()} ({href}) ")
 
         paragraphs = soup.find_all('p')
@@ -165,48 +167,21 @@ def fetch_wikimedia_family(domain, query, target_count, mode, force_dear=False):
         pass
     return results
 
-def fetch_arxiv_abstracts(query, target_count, mode, force_dear=False):
-    results = []
-    try:
-        url = f"http://export.arxiv.org/api/query?search_query=all:{urllib.parse.quote(query)}&start=0&max_results={target_count}"
-        res = session.get(url, timeout=8)
-        if res.status_code == 200:
-            root = ET.fromstring(res.content)
-            ns = {'atom': 'http://www.w3.org/2005/Atom'}
-            for entry in root.findall('atom:entry', ns):
-                summary = entry.find('atom:summary', ns)
-                if summary is not None and summary.text:
-                    cleaned = clean_text_strictly(summary.text, mode, force_dear_prefix=force_dear)
-                    if cleaned:
-                        results.append(cleaned)
-    except Exception:
-        pass
-    return results
-
 def extract_queries_from_sample_text(sample_text):
-    """استخراج استعلامات بحث ذكية من نص عينة متكامل"""
+    """استخراج استعلامات دقيقة ومباشرة من النص المرجعي"""
     queries = []
-    first_line = sample_text.splitlines()[0] if sample_text else ""
     
-    # التقاط البدايات الترحيبية مثل Dear Students, Dear Families...
-    dear_match = re.search(r'(dear\s+[a-zA-Z0-9\s,]+)', first_line, re.IGNORECASE)
-    if dear_match:
-        queries.append(f'"{dear_match.group(1).strip()}" handbook letter')
-        queries.append(f'"{dear_match.group(1).strip()}" website')
-    
-    # البحث عن الكلمات العالية الأهمية
-    words = re.findall(r'\b[a-zA-Z]{5,}\b', sample_text.lower())
-    common = {'students', 'families', 'school', 'handbook', 'education', 'learning', 'welcome', 'principal'}
-    matched_words = [w for w in words if w in common]
-    
-    if matched_words:
-        queries.append("Dear " + " ".join(list(set(matched_words))[:3]) + " website")
+    # البحث عن كلمات مفتاحية قوية
+    if "dear" in sample_text.lower():
+        queries.append('"Dear Students" "https"')
+        queries.append('"Dear Parents" "http"')
+        queries.append('"Dear Families" handbook "website"')
+        queries.append('"Dear" principal letter "https"')
     
     queries.extend([
         '"Dear Students and Families" handbook',
-        '"Dear Parents and Students" letter website',
-        '"Welcome to our school" "http"',
-        '"Sincerely" "Principal" handbook website'
+        '"Welcome to our school" handbook "http"',
+        'school handbook "principal" "website"'
     ])
     return list(dict.fromkeys(queries))
 
@@ -219,10 +194,10 @@ input_type = st.radio("Choose Search Method:", ("Keywords Mode", "Similar Text R
 force_dear_option = False
 if input_type == "Keywords Mode":
     keywords_input = st.text_input("Enter Keywords (comma separated):", placeholder="e.g. dear Brian, dear Students")
-    force_dear_option = st.checkbox("Force texts to start with 'Dear / Hi / Hello'", value=False)
+    force_dear_option = st.checkbox("Require text to contain 'Dear / Hi / Welcome' at start", value=False)
 else:
     sample_text_input = st.text_area("Paste Reference Text Here:", height=200, placeholder="Paste example letter/text here...")
-    force_dear_option = st.checkbox("Require generated texts to start with 'Dear' (Like sample)", value=True)
+    force_dear_option = st.checkbox("Require texts to contain greeting (Dear/Welcome) like sample", value=True)
 
 target_count = st.number_input("Number of texts to extract:", min_value=1, max_value=200, value=20, step=5)
 
@@ -237,9 +212,8 @@ if submitted:
             st.error("Please enter at least one keyword.")
             st.stop()
         for kw in keywords:
-            search_queries.append(kw)
+            search_queries.append(f'"{kw}" "http"')
             search_queries.append(f'"{kw}" website')
-            search_queries.append(f'letter "{kw}"')
     else:
         if not sample_text_input.strip():
             st.error("Please paste a reference text first.")
@@ -257,10 +231,10 @@ if submitted:
         if len(all_results) >= target_count:
             break
             
-        status_box.info(f"⏳ Searching sources for query: **'{q}'**...")
+        status_box.info(f"⏳ Searching sources for: **'{q}'**...")
         
         # 1. DuckDuckGo Lite
-        urls = search_ddg_lite(q, max_results=15)
+        urls = search_ddg_lite(q, max_results=20)
         for url in urls:
             if len(all_results) >= target_count:
                 break
@@ -285,38 +259,25 @@ if submitted:
                 if res_data:
                     all_results.append(res_data)
 
-        # 3. Wikibooks / Wikiquote
+        # 3. Wikibooks
         if len(all_results) < target_count:
-            for wiki_dom in ["wikibooks", "wikiquote"]:
+            w_texts = fetch_wikimedia_family("wikibooks", q, 5, extraction_mode, force_dear=force_dear_option)
+            for wt in w_texts:
                 if len(all_results) >= target_count:
                     break
-                w_texts = fetch_wikimedia_family(wiki_dom, q, 5, extraction_mode, force_dear=force_dear_option)
-                for wt in w_texts:
-                    if len(all_results) >= target_count:
-                        break
-                    all_results.append(wt)
-
-        # 4. ArXiv Abstracts
-        if len(all_results) < target_count:
-            ar_texts = fetch_arxiv_abstracts(q, 5, extraction_mode, force_dear=force_dear_option)
-            for at in ar_texts:
-                if len(all_results) >= target_count:
-                    break
-                all_results.append(at)
+                all_results.append(wt)
 
         progress_bar.progress((idx + 1) / total_q)
 
     status_box.success(f"🎉 Process Complete! Total matching texts collected: **{len(all_results)}**")
     
-    # المعاينة
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found for these criteria. Try unchecking strict options or using broader keywords.")
+        st.warning("No matching results found. Try unchecking the strict 'Dear' requirement checkbox.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
         
-        # تجهيز ملف Negative.txt
         file_content = "\n\n__SEP__\n\n".join(all_results)
         st.download_button(
             label="📥 Download Negative.txt",
