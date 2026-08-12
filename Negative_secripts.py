@@ -1,5 +1,6 @@
 import re
 import time
+import random
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
@@ -11,18 +12,26 @@ st.set_page_config(
     layout="wide"
 )
 
-session = requests.Session()
-session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5"
-})
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/115.0"
+]
+
+def get_session():
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    })
+    return s
 
 st.sidebar.header("⚙️ Extraction Settings")
 
 search_engine_choice = st.sidebar.radio(
     "Choose Search Engine:",
-    ("DuckDuckGo (Recommended / Fast)", "Google (Scraped)", "Auto (Fallback)")
+    ("DuckDuckGo (Fast & Reliable)", "Google", "Auto Multi-Engine")
 )
 
 extraction_mode = st.sidebar.radio(
@@ -32,10 +41,10 @@ extraction_mode = st.sidebar.radio(
 
 def is_valid_url(url):
     url_lower = url.lower()
-    bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.png', '.jpg', '.jpeg', '.mp4']
+    bad_exts = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.png', '.jpg', '.jpeg', '.mp4', '.zip']
     if any(url_lower.endswith(ext) for ext in bad_exts):
         return False
-    bad_domains = ['google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com']
+    bad_domains = ['google.com', 'bing.com', 'yahoo.com', 'duckduckgo.com', 'youtube.com', 'facebook.com', 'twitter.com', 'instagram.com', 'linkedin.com', 'reddit.com']
     if any(domain in url_lower for domain in bad_domains):
         return False
     return True
@@ -46,9 +55,10 @@ def clean_extracted_text(raw_text, mode):
     
     for line in raw_text.splitlines():
         line_str = line.strip()
-        if len(line_str) < 15:
+        if len(line_str) < 10:
             continue
-        if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'document.', '{', '}', '<', '>']):
+        # حذف أسطر السكريبتات
+        if any(kw in line_str.lower() for kw in ['javascript', 'function(', 'var ', 'const ', 'document.', '{', '}', '<', '>', '==', 'css']):
             continue
 
         if preserve_links:
@@ -58,18 +68,19 @@ def clean_extracted_text(raw_text, mode):
             sanitized_line = re.sub(r'[^a-zA-Z0-9\s.,!?\'"\-\–\—]', '', line_str)
 
         sanitized_line = ' '.join(sanitized_line.split())
-        if len(sanitized_line) > 10:
+        if len(sanitized_line) > 8:
             clean_lines.append(sanitized_line)
             
     if not clean_lines:
         return None
         
-    return '\n'.join(clean_lines[:40])
+    return '\n'.join(clean_lines[:50])
 
 def extract_content_from_url(url, mode):
     try:
-        res = session.get(url, timeout=6)
-        if res.status_code != 200 or 'text/html' not in res.headers.get('Content-Type', '').lower():
+        session = get_session()
+        res = session.get(url, timeout=5)
+        if res.status_code != 200 or 'text' not in res.headers.get('Content-Type', '').lower():
             return None
             
         soup = BeautifulSoup(res.text, 'html.parser')
@@ -81,23 +92,24 @@ def extract_content_from_url(url, mode):
                 if href.startswith('http') and not any(bd in href for bd in ['facebook', 'twitter', 'instagram']):
                     a.replace_with(f" {anchor_text} ({href}) ")
 
-        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe"]):
+        for tag in soup(["script", "style", "nav", "header", "footer", "form", "aside", "noscript", "svg", "iframe", "button"]):
             tag.decompose()
 
-        paragraphs = soup.find_all(['p', 'div', 'article'])
+        paragraphs = soup.find_all(['p', 'div', 'article', 'section'])
         raw_text = "\n".join([p.get_text() for p in paragraphs]) if paragraphs else soup.get_text(separator='\n')
         
         return clean_extracted_text(raw_text, mode)
     except Exception:
         return None
 
-# --- محركات البحث المباشرة المحدثة ---
+# --- محركات البحث المباشرة ---
 
-def search_ddg_html(query, max_results=15):
+def search_ddg(query, max_results=12):
     links = []
     try:
+        session = get_session()
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-        res = session.get(url, timeout=7)
+        res = session.get(url, timeout=6)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for a in soup.find_all('a', class_='result__url'):
@@ -115,11 +127,12 @@ def search_ddg_html(query, max_results=15):
         pass
     return links
 
-def search_google_custom(query, max_results=10):
+def search_google_direct(query, max_results=10):
     links = []
     try:
+        session = get_session()
         url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&num={max_results}&hl=en"
-        res = session.get(url, timeout=7)
+        res = session.get(url, timeout=6)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for a in soup.find_all('a', href=True):
@@ -135,16 +148,16 @@ def search_google_custom(query, max_results=10):
         pass
     return links
 
-def fetch_urls(query, engine_setting, max_results=10):
+def fetch_urls(query, engine_choice, max_results=10):
     urls = []
-    if engine_setting == "DuckDuckGo (Recommended / Fast)":
-        urls = search_ddg_html(query, max_results)
-    elif engine_setting == "Google (Scraped)":
-        urls = search_google_custom(query, max_results)
+    if engine_choice == "DuckDuckGo (Fast & Reliable)":
+        urls = search_ddg(query, max_results)
+    elif engine_choice == "Google":
+        urls = search_google_direct(query, max_results)
     else: # Auto
-        urls = search_ddg_html(query, max_results)
+        urls = search_ddg(query, max_results)
         if not urls:
-            urls = search_google_custom(query, max_results)
+            urls = search_google_direct(query, max_results)
     return urls
 
 def extract_queries_from_sample_text(sample_text):
@@ -152,17 +165,16 @@ def extract_queries_from_sample_text(sample_text):
     clean_sample = sample_text.strip()
     
     if len(clean_sample) < 40:
-        queries.append(f'{clean_sample}')
-        queries.append(f'"{clean_sample}"')
+        queries.append(clean_sample)
+        queries.append(f'{clean_sample} website')
     else:
-        lines = [l.strip() for l in clean_sample.splitlines() if len(l.strip()) > 10]
+        lines = [l.strip() for l in clean_sample.splitlines() if len(l.strip()) > 5]
         if lines:
-            queries.append(f'"{lines[0][:30]}"')
+            queries.append(lines[0][:35])
 
     queries.extend([
-        'dear students school handbook',
-        'dear parents elementary school',
-        'welcome students principal letter'
+        'dear students handbook website',
+        'school principal letter to parents'
     ])
     return list(dict.fromkeys(queries))
 
@@ -223,7 +235,7 @@ if submitted:
             res_data = extract_content_from_url(url, extraction_mode)
             if res_data:
                 all_results.append(res_data)
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         progress_bar.progress((idx + 1) / total_q)
 
@@ -231,7 +243,7 @@ if submitted:
     
     st.subheader("📋 Extracted Results Preview:")
     if not all_results:
-        st.warning("No matching results found. Try broader keywords or switch engine to DuckDuckGo.")
+        st.warning("No matching results found. Try using simpler keywords.")
     else:
         for res in all_results[:10]:
             st.text_area("Result Preview", value=res, height=180)
