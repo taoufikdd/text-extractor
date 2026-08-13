@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(layout="wide", page_title="SMTP Extract & Matcher")
+st.set_page_config(layout="wide", page_title="SMTP Extractor & Scan Matcher")
 
 html_code = """
 <!DOCTYPE html>
@@ -23,14 +23,15 @@ html_code = """
         }
         header {
             background-color: #252526;
-            padding: 12px 20px;
+            padding: 10px 20px;
             display: flex;
             justify-content: space-between;
             align-items: center;
             border-bottom: 1px solid #3c3c3c;
         }
         header h1 { font-size: 16px; color: #61afef; font-weight: 600; }
-        .stats { font-size: 13px; color: #9cdcfe; display: flex; gap: 20px; }
+        .controls { display: flex; gap: 15px; align-items: center; }
+        .stats { font-size: 13px; color: #9cdcfe; display: flex; gap: 15px; }
         .grid-container {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -81,14 +82,21 @@ html_code = """
             overflow-x: auto;
         }
         textarea::placeholder { color: #5c6370; }
-        button.copy-btn {
-            background-color: #28a745;
+        button {
+            background-color: #0e639c;
             color: white;
             border: none;
+            padding: 5px 12px;
+            font-size: 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover { background-color: #1177bb; }
+        button.copy-btn {
+            background-color: #28a745;
             padding: 3px 8px;
             font-size: 11px;
-            border-radius: 3px;
-            cursor: pointer;
         }
         button.copy-btn:hover { background-color: #218838; }
     </style>
@@ -97,9 +105,12 @@ html_code = """
 
     <header>
         <h1>⚡ SMTP Extractor & Scan Matcher</h1>
-        <div class="stats">
-            <span id="statExtracted">Extracted: 0</span>
-            <span id="statMatched">Matched: 0</span>
+        <div class="controls">
+            <button onclick="processAll()">Process / Extract ⚡</button>
+            <div class="stats">
+                <span id="statExtracted">Extracted: 0</span>
+                <span id="statMatched">Matched: 0</span>
+            </div>
         </div>
     </header>
 
@@ -119,13 +130,13 @@ html_code = """
                 <span>2. extract_email (Extracted Emails)</span>
                 <button class="copy-btn" onclick="copyBox('extractEmail')">Copy 📋</button>
             </div>
-            <textarea id="extractEmail" readonly placeholder="Extracted emails will appear here automatically..."></textarea>
+            <textarea id="extractEmail" readonly placeholder="Extracted emails will appear here..."></textarea>
         </div>
 
         <!-- Box 3: Good_scan -->
         <div class="box">
             <div class="box-header">
-                <span>3. Good_scan (Paste Scanned Emails/List)</span>
+                <span>3. Good_scan (Paste Scanned Emails)</span>
                 <span class="tag">INPUT</span>
             </div>
             <textarea id="goodScan" placeholder="Paste Good_scan emails here..."></textarea>
@@ -137,64 +148,81 @@ html_code = """
                 <span>4. Test_all (Matched Full SMTPs)</span>
                 <button class="copy-btn" onclick="copyBox('testAll')">Copy 📋</button>
             </div>
-            <textarea id="testAll" readonly placeholder="Matched SMTP lines will appear here automatically..."></textarea>
+            <textarea id="testAll" readonly placeholder="Matched SMTP lines will appear here..."></textarea>
         </div>
     </div>
 
     <script>
-        const gmailRegex = /[a-zA-Z0-9._%+-]+@gmail\.com/gi;
-
-        let smtpDict = {};
-
         function processAll() {
-            const smtpsText = document.getElementById("allSmtps").value;
-            const goodScanText = document.getElementById("goodScan").value;
+            try {
+                const smtpsText = document.getElementById("allSmtps").value;
+                const goodScanText = document.getElementById("goodScan").value;
 
-            smtpDict = {};
-            let extractedEmails = [];
+                // Robust Regex for all emails
+                const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi;
 
-            // 1. Process All_smtps & Extract Emails
-            if (smtpsText.trim()) {
-                const lines = smtpsText.split('\n');
-                lines.forEach(line => {
-                    const cleanLine = line.trim();
-                    if (cleanLine) {
-                        const matches = cleanLine.match(gmailRegex);
-                        if (matches && matches.length > 0) {
-                            const email = matches[0].toLowerCase();
-                            extractedEmails.push(email);
-                            smtpDict[email] = cleanLine;
-                        }
-                    }
-                });
-            }
+                let smtpMap = new Map();
+                let extractedSet = new Set();
 
-            document.getElementById("extractEmail").value = extractedEmails.join('\n');
-            document.getElementById("statExtracted").innerText = `Extracted: ${extractedEmails.length}`;
+                // 1. Extract emails from All_smtps
+                if (smtpsText && smtpsText.trim()) {
+                    const lines = smtpsText.split(/\r?\n/);
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (!line) continue;
 
-            // 2. Process Good_scan & Match with All_smtps
-            let matchedLines = [];
-            if (goodScanText.trim() && Object.keys(smtpDict).length > 0) {
-                const scanLines = goodScanText.split('\n');
-                scanLines.forEach(line => {
-                    const cleanLine = line.trim();
-                    if (cleanLine) {
-                        const matches = cleanLine.match(gmailRegex);
-                        if (matches && matches.length > 0) {
-                            const scanEmail = matches[0].toLowerCase();
-                            if (smtpDict[scanEmail]) {
-                                matchedLines.push(smtpDict[scanEmail]);
+                        const matches = line.match(emailRegex);
+                        if (matches) {
+                            for (let j = 0; j < matches.length; j++) {
+                                const email = matches[j].toLowerCase();
+                                extractedSet.add(email);
+                                if (!smtpMap.has(email)) {
+                                    smtpMap.set(email, line);
+                                }
                             }
                         }
                     }
-                });
-            }
+                }
 
-            document.getElementById("testAll").value = matchedLines.join('\n');
-            document.getElementById("statMatched").innerText = `Matched: ${matchedLines.length}`;
+                const extractedEmails = Array.from(extractedSet);
+                document.getElementById("extractEmail").value = extractedEmails.join('\n');
+                document.getElementById("statExtracted").innerText = "Extracted: " + extractedEmails.length;
+
+                // 2. Match with Good_scan
+                let matchedLines = [];
+                let matchedSet = new Set();
+
+                if (goodScanText && goodScanText.trim() && smtpMap.size > 0) {
+                    const scanLines = goodScanText.split(/\r?\n/);
+                    for (let i = 0; i < scanLines.length; i++) {
+                        const line = scanLines[i].trim();
+                        if (!line) continue;
+
+                        const matches = line.match(emailRegex);
+                        if (matches) {
+                            for (let j = 0; j < matches.length; j++) {
+                                const scanEmail = matches[j].toLowerCase();
+                                if (smtpMap.has(scanEmail)) {
+                                    const fullSmtpLine = smtpMap.get(scanEmail);
+                                    if (!matchedSet.has(fullSmtpLine)) {
+                                        matchedSet.add(fullSmtpLine);
+                                        matchedLines.push(fullSmtpLine);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                document.getElementById("testAll").value = matchedLines.join('\n');
+                document.getElementById("statMatched").innerText = "Matched: " + matchedLines.length;
+
+            } catch (err) {
+                console.error("Error processing:", err);
+            }
         }
 
-        // Real-time Event Listeners
+        // Auto trigger on input & paste
         document.getElementById("allSmtps").addEventListener("input", processAll);
         document.getElementById("goodScan").addEventListener("input", processAll);
 
@@ -203,7 +231,7 @@ html_code = """
             if (!textarea.value) return;
             textarea.select();
             document.execCommand("copy");
-            alert("Copied to clipboard!");
+            alert("Copied!");
         }
     </script>
 </body>
