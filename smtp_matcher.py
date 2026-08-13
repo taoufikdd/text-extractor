@@ -143,88 +143,88 @@ html_code = """
     </div>
 
     <script>
-        let lastSmtpsVal = "";
-        let lastScanVal = "";
-
-        function extractEmailsFromText(text) {
-            if (!text) return [];
-            const regex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-            const matches = text.match(regex);
-            if (!matches) return [];
-            return matches.map(e => e.toLowerCase());
-        }
+        const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi;
+        let debounceTimer = null;
 
         function processAll() {
-            const smtpsElem = document.getElementById("allSmtps");
-            const scanElem = document.getElementById("goodScan");
-            if (!smtpsElem || !scanElem) return;
+            const smtpsVal = document.getElementById("allSmtps").value;
+            const scanVal = document.getElementById("goodScan").value;
 
-            const smtpsVal = smtpsElem.value;
-            const scanVal = scanElem.value;
+            if (!smtpsVal || !smtpsVal.trim()) {
+                document.getElementById("extractEmail").value = "";
+                document.getElementById("testAll").value = "";
+                document.getElementById("statExtracted").innerText = "Extracted: 0";
+                document.getElementById("statMatched").innerText = "Matched: 0";
+                return;
+            }
 
-            // Stop if no text changes occurred
-            if (smtpsVal === lastSmtpsVal && scanVal === lastScanVal) return;
-            lastSmtpsVal = smtpsVal;
-            lastScanVal = scanVal;
+            // 1. Instant Global Email Extraction for Box 2
+            const rawExtracted = smtpsVal.match(emailRegex) || [];
+            const uniqueEmails = [];
+            const emailSet = new Set();
 
+            for (let i = 0; i < rawExtracted.length; i++) {
+                const lower = rawExtracted[i].toLowerCase();
+                if (!emailSet.has(lower)) {
+                    emailSet.add(lower);
+                    uniqueEmails.push(lower);
+                }
+            }
+
+            document.getElementById("extractEmail").value = uniqueEmails.join('\n');
+            document.getElementById("statExtracted").innerText = "Extracted: " + uniqueEmails.length;
+
+            // 2. Line Mapping for Full SMTP Matching (Box 4)
+            const lines = smtpsVal.split(/\r?\n/);
             const smtpMap = new Map();
-            const extractedEmailsList = [];
-            const extractedSet = new Set();
 
-            // 1. Process All_smtps
-            if (smtpsVal && smtpsVal.trim()) {
-                const lines = smtpsVal.split(/\r?\n/);
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i].trim();
-                    if (!line) continue;
-
-                    const emails = extractEmailsFromText(line);
-                    for (let j = 0; j < emails.length; j++) {
-                        const email = emails[j];
-                        if (!smtpMap.has(email)) {
-                            smtpMap.set(email, line);
-                        }
-                        if (!extractedSet.has(email)) {
-                            extractedSet.add(email);
-                            extractedEmailsList.push(email);
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                const lineEmails = line.match(emailRegex);
+                if (lineEmails) {
+                    for (let j = 0; j < lineEmails.length; j++) {
+                        const em = lineEmails[j].toLowerCase();
+                        if (!smtpMap.has(em)) {
+                            smtpMap.set(em, line);
                         }
                     }
                 }
             }
 
-            document.getElementById("extractEmail").value = extractedEmailsList.join('\n');
-            document.getElementById("statExtracted").innerText = "Extracted: " + extractedEmailsList.length;
+            // 3. Process Good_scan
+            if (scanVal && scanVal.trim()) {
+                const scanMatches = scanVal.match(emailRegex) || [];
+                const matchedLines = [];
+                const matchedSet = new Set();
 
-            // 2. Process Good_scan & Match
-            const matchedLines = [];
-            const matchedSet = new Set();
-
-            if (scanVal && scanVal.trim() && smtpMap.size > 0) {
-                const scanLines = scanVal.split(/\r?\n/);
-                for (let i = 0; i < scanLines.length; i++) {
-                    const line = scanLines[i].trim();
-                    if (!line) continue;
-
-                    const scanEmails = extractEmailsFromText(line);
-                    for (let j = 0; j < scanEmails.length; j++) {
-                        const scanEmail = scanEmails[j];
-                        if (smtpMap.has(scanEmail)) {
-                            const fullSmtpLine = smtpMap.get(scanEmail);
-                            if (!matchedSet.has(fullSmtpLine)) {
-                                matchedSet.add(fullSmtpLine);
-                                matchedLines.push(fullSmtpLine);
-                            }
+                for (let i = 0; i < scanMatches.length; i++) {
+                    const scanEmail = scanMatches[i].toLowerCase();
+                    if (smtpMap.has(scanEmail)) {
+                        const fullLine = smtpMap.get(scanEmail);
+                        if (!matchedSet.has(fullLine)) {
+                            matchedSet.add(fullLine);
+                            matchedLines.push(fullLine);
                         }
                     }
                 }
-            }
 
-            document.getElementById("testAll").value = matchedLines.join('\n');
-            document.getElementById("statMatched").innerText = "Matched: " + matchedLines.length;
+                document.getElementById("testAll").value = matchedLines.join('\n');
+                document.getElementById("statMatched").innerText = "Matched: " + matchedLines.length;
+            } else {
+                document.getElementById("testAll").value = "";
+                document.getElementById("statMatched").innerText = "Matched: 0";
+            }
         }
 
-        // Auto Inspection Loop every 200ms (Guarantees execution even on big paste)
-        setInterval(processAll, 200);
+        function triggerDebouncedProcess() {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(processAll, 200);
+        }
+
+        // Event listeners for smooth paste & typing
+        document.getElementById("allSmtps").addEventListener("input", triggerDebouncedProcess);
+        document.getElementById("goodScan").addEventListener("input", triggerDebouncedProcess);
 
         function copyBox(id) {
             const textarea = document.getElementById(id);
