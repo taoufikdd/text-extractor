@@ -143,85 +143,92 @@ html_code = """
     </div>
 
     <script>
-        const allSmtpsInput = document.getElementById("allSmtps");
-        const goodScanInput = document.getElementById("goodScan");
-        const extractEmailOutput = document.getElementById("extractEmail");
-        const testAllOutput = document.getElementById("testAll");
+        let lastSmtpsVal = "";
+        let lastScanVal = "";
+
+        function extractEmailsFromText(text) {
+            if (!text) return [];
+            const regex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+            const matches = text.match(regex);
+            if (!matches) return [];
+            return matches.map(e => e.toLowerCase());
+        }
 
         function processAll() {
-            const smtpsText = allSmtpsInput.value;
-            const goodScanText = goodScanInput.value;
+            const smtpsElem = document.getElementById("allSmtps");
+            const scanElem = document.getElementById("goodScan");
+            if (!smtpsElem || !scanElem) return;
 
-            // Strict & Robust Email Regex
-            const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/gi;
+            const smtpsVal = smtpsElem.value;
+            const scanVal = scanElem.value;
 
-            let smtpMap = new Map();
-            let extractedSet = new Set();
+            // Stop if no text changes occurred
+            if (smtpsVal === lastSmtpsVal && scanVal === lastScanVal) return;
+            lastSmtpsVal = smtpsVal;
+            lastScanVal = scanVal;
+
+            const smtpMap = new Map();
+            const extractedEmailsList = [];
+            const extractedSet = new Set();
 
             // 1. Process All_smtps
-            if (smtpsText && smtpsText.trim()) {
-                const lines = smtpsText.split(/\r?\n/);
+            if (smtpsVal && smtpsVal.trim()) {
+                const lines = smtpsVal.split(/\r?\n/);
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i].trim();
                     if (!line) continue;
 
-                    const matches = line.match(emailRegex);
-                    if (matches) {
-                        for (let j = 0; j < matches.length; j++) {
-                            const email = matches[j].toLowerCase();
+                    const emails = extractEmailsFromText(line);
+                    for (let j = 0; j < emails.length; j++) {
+                        const email = emails[j];
+                        if (!smtpMap.has(email)) {
+                            smtpMap.set(email, line);
+                        }
+                        if (!extractedSet.has(email)) {
                             extractedSet.add(email);
-                            if (!smtpMap.has(email)) {
-                                smtpMap.set(email, line);
-                            }
+                            extractedEmailsList.push(email);
                         }
                     }
                 }
             }
 
-            const extractedEmails = Array.from(extractedSet);
-            extractEmailOutput.value = extractedEmails.join('\n');
-            document.getElementById("statExtracted").innerText = "Extracted: " + extractedEmails.length;
+            document.getElementById("extractEmail").value = extractedEmailsList.join('\n');
+            document.getElementById("statExtracted").innerText = "Extracted: " + extractedEmailsList.length;
 
             // 2. Process Good_scan & Match
-            let matchedLines = [];
-            let matchedSet = new Set();
+            const matchedLines = [];
+            const matchedSet = new Set();
 
-            if (goodScanText && goodScanText.trim() && smtpMap.size > 0) {
-                const scanLines = goodScanText.split(/\r?\n/);
+            if (scanVal && scanVal.trim() && smtpMap.size > 0) {
+                const scanLines = scanVal.split(/\r?\n/);
                 for (let i = 0; i < scanLines.length; i++) {
                     const line = scanLines[i].trim();
                     if (!line) continue;
 
-                    const matches = line.match(emailRegex);
-                    if (matches) {
-                        for (let j = 0; j < matches.length; j++) {
-                            const scanEmail = matches[j].toLowerCase();
-                            if (smtpMap.has(scanEmail)) {
-                                const fullSmtpLine = smtpMap.get(scanEmail);
-                                if (!matchedSet.has(fullSmtpLine)) {
-                                    matchedSet.add(fullSmtpLine);
-                                    matchedLines.push(fullSmtpLine);
-                                }
+                    const scanEmails = extractEmailsFromText(line);
+                    for (let j = 0; j < scanEmails.length; j++) {
+                        const scanEmail = scanEmails[j];
+                        if (smtpMap.has(scanEmail)) {
+                            const fullSmtpLine = smtpMap.get(scanEmail);
+                            if (!matchedSet.has(fullSmtpLine)) {
+                                matchedSet.add(fullSmtpLine);
+                                matchedLines.push(fullSmtpLine);
                             }
                         }
                     }
                 }
             }
 
-            testAllOutput.value = matchedLines.join('\n');
+            document.getElementById("testAll").value = matchedLines.join('\n');
             document.getElementById("statMatched").innerText = "Matched: " + matchedLines.length;
         }
 
-        // Instant Execution Listeners (typing, paste, input)
-        allSmtpsInput.addEventListener("input", processAll);
-        goodScanInput.addEventListener("input", processAll);
-
-        allSmtpsInput.addEventListener("paste", () => setTimeout(processAll, 50));
-        goodScanInput.addEventListener("paste", () => setTimeout(processAll, 50));
+        // Auto Inspection Loop every 200ms (Guarantees execution even on big paste)
+        setInterval(processAll, 200);
 
         function copyBox(id) {
             const textarea = document.getElementById(id);
-            if (!textarea.value) return;
+            if (!textarea || !textarea.value) return;
             textarea.select();
             document.execCommand("copy");
             alert("Copied!");
