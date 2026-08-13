@@ -20,7 +20,6 @@ st.markdown("""
 
 st.title("⚡ SMTP Extractor & Scan Matcher")
 
-# Regex pattern for email extraction
 EMAIL_REGEX = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
 
 col1, col2 = st.columns(2)
@@ -39,7 +38,7 @@ with col1:
         key="input_scan"
     )
 
-# Logic Processing (Native Python)
+# Extract Logic
 extracted_emails = []
 smtp_map = {}
 
@@ -56,6 +55,7 @@ if all_smtps and all_smtps.strip():
             if email_lower not in extracted_emails:
                 extracted_emails.append(email_lower)
 
+# Match Logic
 matched_smtps = []
 if good_scan and good_scan.strip() and smtp_map:
     scan_matches = re.findall(EMAIL_REGEX, good_scan)
@@ -68,19 +68,18 @@ if good_scan and good_scan.strip() and smtp_map:
                 seen_lines.add(full_line)
                 matched_smtps.append(full_line)
 
+# Output Display (Without blocking keys)
 with col2:
     extracted_text = "\n".join(extracted_emails)
     st.text_area(
         f"2. EXTRACT_EMAIL (EXTRACTED: {len(extracted_emails)})", 
         value=extracted_text, 
-        height=320,
-        key="out_extracted"
+        height=320
     )
     
     matched_text = "\n".join(matched_smtps)
     st.text_area(
         f"4. TEST_ALL (MATCHED: {len(matched_smtps)})", 
         value=matched_text, 
-        height=320,
-        key="out_matched"
+        height=320
     )
