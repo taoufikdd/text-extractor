@@ -32,18 +32,58 @@ systemctl restart sshd
 USER_DATA_B64 = base64.b64encode(USER_DATA_SCRIPT.encode("utf-8")).decode("utf-8")
 
 # ==========================================
-# 2. وظائف إدارة الحسابات (JSON)
+# 🔒 نظام LOGIN (Authentication)
+# ==========================================
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    if st.session_state["authenticated"]:
+        return True
+
+    # جلب كلمة السر المحددة فـ Secrets أو كلمة افتراضية
+    APP_PASSWORD = st.secrets.get("APP_PASSWORD", "admin12345")
+
+    st.title("🔒 Login to Vultr Manager")
+    user_pass = st.text_input("Enter Access Password:", type="password")
+    
+    if st.button("Login", type="primary"):
+        if user_pass == APP_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.success("✅ Logged in successfully!")
+            st.rerun()
+        else:
+            st.error("❌ Invalid password!")
+    return False
+
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 2. وظائف إدارة الحسابات (مع الـ Persistent Cache)
 # ==========================================
 def load_accounts():
+    accounts = {}
+    
+    # 1. القراءة من Streamlit Secrets (دائمة وما كتمسحش)
+    if "VULTR_ACCOUNTS" in st.secrets:
+        try:
+            accounts.update(json.loads(st.secrets["VULTR_ACCOUNTS"]))
+        except Exception:
+            pass
+
+    # 2. القراءة من الملف المحلي (Local Fallback)
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                accounts.update(json.load(f))
         except Exception:
-            return {}
-    return {}
+            pass
+            
+    return accounts
 
 def save_accounts(accounts):
+    # حفظ أوفلاين فـ الملف المحلي
     with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
         json.dump(accounts, f, indent=4)
 
@@ -177,6 +217,11 @@ accounts = load_accounts()
 
 st.sidebar.title("🎮 Account Management")
 
+# زر الخروج (Logout)
+if st.sidebar.button("🚪 Logout"):
+    st.session_state["authenticated"] = False
+    st.rerun()
+
 # إضافة حساب جديد
 with st.sidebar.expander("➕ Add New Vultr Account"):
     acc_name = st.text_input("Account Label (e.g. Acc_1)")
@@ -191,6 +236,10 @@ with st.sidebar.expander("➕ Add New Vultr Account"):
             }
             save_accounts(accounts)
             st.sidebar.success(f"Account '{acc_name}' saved!")
+            
+            # عرض فورم يسهّل نسخ الحسابات إلى Secrets
+            st.sidebar.info("💡 Copy the JSON below to 'Streamlit Secrets' for permanent storage:")
+            st.sidebar.code(json.dumps(accounts, indent=2), language="json")
             st.rerun()
         else:
             st.sidebar.error("Name and API Key are required.")
