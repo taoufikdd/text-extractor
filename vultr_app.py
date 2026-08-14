@@ -41,7 +41,6 @@ def check_password():
     if st.session_state["authenticated"]:
         return True
 
-    # جلب كلمة السر المحددة فـ Secrets أو كلمة افتراضية
     APP_PASSWORD = st.secrets.get("APP_PASSWORD", "admin12345")
 
     st.title("🔒 Login to Vultr Manager")
@@ -64,15 +63,12 @@ if not check_password():
 # ==========================================
 def load_accounts():
     accounts = {}
-    
-    # 1. القراءة من Streamlit Secrets (دائمة وما كتمسحش)
     if "VULTR_ACCOUNTS" in st.secrets:
         try:
             accounts.update(json.loads(st.secrets["VULTR_ACCOUNTS"]))
         except Exception:
             pass
 
-    # 2. القراءة من الملف المحلي (Local Fallback)
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
@@ -83,7 +79,6 @@ def load_accounts():
     return accounts
 
 def save_accounts(accounts):
-    # حفظ أوفلاين فـ الملف المحلي
     with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
         json.dump(accounts, f, indent=4)
 
@@ -114,17 +109,39 @@ def test_proxy_connection(proxies):
     return False, "Unknown Error"
 
 # ==========================================
-# 3. وظائف API Vultr
+# 3. وظائف API Vultr والتحقق من حالة الحساب
 # ==========================================
+def check_account_health(api_key, proxies):
+    """فحص حالة الحساب بالتفصيل للتأكد من عدم حظره أو تعليقه"""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get("https://api.vultr.com/v2/account", headers=headers, proxies=proxies, timeout=12)
+        if res.status_code == 200:
+            acc_info = res.json().get("account", {})
+            return True, "ACTIVE", acc_info
+        elif res.status_code == 403:
+            return False, "SUSPENDED_OR_FORBIDDEN", "⚠️ Account is Suspended, Locked, or Unauthorized (403 Forbidden)"
+        elif res.status_code == 401:
+            return False, "INVALID_API_KEY", "❌ Invalid API Key (401 Unauthorized)"
+        else:
+            return False, "ERROR", f"⚠️ Vultr Error Code {res.status_code}: {res.text}"
+    except Exception as e:
+        return False, "CONNECTION_ERROR", f"❌ Connection Error: {str(e)}"
+
 def get_all_instances(api_key, proxies):
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         res = requests.get("https://api.vultr.com/v2/instances", headers=headers, proxies=proxies, timeout=12)
         if res.status_code == 200:
-            return res.json().get("instances", [])
-    except Exception:
-        pass
-    return []
+            return True, res.json().get("instances", []), None
+        elif res.status_code == 403:
+            return False, [], "⚠️ Account Status: SUSPENDED / LOCKED (403 Forbidden)"
+        elif res.status_code == 401:
+            return False, [], "❌ Account Status: INVALID API KEY (401 Unauthorized)"
+        else:
+            return False, [], f"⚠️ Error {res.status_code}: {res.text}"
+    except Exception as e:
+        return False, [], f"❌ Network/Proxy Error: {str(e)}"
 
 def get_centos_os_id(api_key, proxies):
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -169,7 +186,6 @@ def wait_for_ip(api_key, instance_id, proxies, max_retries=20):
         time.sleep(3)
     return "0.0.0.0"
 
-# --- وظائف تنفيذيّة مسرّعة (Parallel API Executions) ---
 def deploy_single_server(counter, code, os_id, current_api_key, current_proxies):
     hostname = f"vultr-server-{counter}"
     headers = {
@@ -196,7 +212,7 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
             formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
             return True, formatted, None
         else:
-            return False, None, res.text
+            return False, None, f"HTTP {res.status_code}: {res.text}"
     except Exception as e:
         return False, None, str(e)
 
@@ -217,7 +233,6 @@ accounts = load_accounts()
 
 st.sidebar.title("🎮 Account Management")
 
-# زر الخروج (Logout)
 if st.sidebar.button("🚪 Logout"):
     st.session_state["authenticated"] = False
     st.rerun()
@@ -236,15 +251,10 @@ with st.sidebar.expander("➕ Add New Vultr Account"):
             }
             save_accounts(accounts)
             st.sidebar.success(f"Account '{acc_name}' saved!")
-            
-            # عرض فورم يسهّل نسخ الحسابات إلى Secrets
-            st.sidebar.info("💡 Copy the JSON below to 'Streamlit Secrets' for permanent storage:")
-            st.sidebar.code(json.dumps(accounts, indent=2), language="json")
             st.rerun()
         else:
             st.sidebar.error("Name and API Key are required.")
 
-# اختيار الحساب الحالي
 if not accounts:
     st.warning("⚠️ No Vultr accounts found. Please add an account using the left sidebar.")
     st.stop()
@@ -255,7 +265,14 @@ current_api_key = active_acc["api_key"]
 current_proxy_str = active_acc["proxy"]
 current_proxies = parse_proxy(current_proxy_str)
 
-# إمكانية حذف الحساب المحدد
+# زر فحص حالة الحساب
+if st.sidebar.button("🔍 Test Account Status"):
+    ok, code, msg = check_account_health(current_api_key, current_proxies)
+    if ok:
+        st.sidebar.success(f"✅ Account OK! Balance: ${msg.get('balance')} | Pending Charges: ${msg.get('pending_charges')}")
+    else:
+        st.sidebar.error(f"❌ {msg}")
+
 if st.sidebar.button("🗑️ Delete Selected Account"):
     del accounts[selected_acc_name]
     save_accounts(accounts)
@@ -277,6 +294,12 @@ else:
 # ==========================================
 st.title(f"🖥️ Vultr Manager — [{selected_acc_name}]")
 
+# فحص تلقائي سريع لحالة الحساب وتنبيه المستخدم
+is_healthy, status_code_acc, acc_details = check_account_health(current_api_key, current_proxies)
+
+if not is_healthy:
+    st.error(f"🚨 **ACCOUNT ALERT [{selected_acc_name}]:** {acc_details}")
+
 tab1, tab2, tab3 = st.tabs(["📊 Active Instances", "🚀 Deploy Servers", "🗑️ Delete Servers"])
 
 # --- TAB 1: عرض السيرفرات النشطة ---
@@ -285,8 +308,11 @@ with tab1:
     if st.button("🔄 Refresh Instances"):
         st.rerun()
         
-    instances = get_all_instances(current_api_key, current_proxies)
-    if instances:
+    success, instances, err_msg = get_all_instances(current_api_key, current_proxies)
+    
+    if not success:
+        st.error(f"🚨 Failed to load instances: {err_msg}")
+    elif instances:
         table_data = []
         for inst in instances:
             table_data.append({
@@ -300,71 +326,73 @@ with tab1:
             })
         st.dataframe(table_data, use_container_width=True)
     else:
-        st.info("No active instances found or failed to connect.")
+        st.info("No active instances found in this account.")
 
-# --- TAB 2: إنشاء سيرفرات جديدة (مسرّعة بـ Threads) ---
+# --- TAB 2: إنشاء سيرفرات جديدة ---
 with tab2:
     st.subheader("Deploy New Servers")
     
-    os_id, os_name = get_centos_os_id(current_api_key, current_proxies)
-    if not os_id:
-        st.error("Could not fetch CentOS OS ID. Check API Key/Proxy.")
+    if not is_healthy:
+        st.warning("⚠️ You cannot deploy new servers because the selected account has errors or is suspended.")
     else:
-        st.success(f"Target OS: **{os_name}** (ID: `{os_id}`)")
-        
-        regions_list = get_vultr_regions(current_api_key, current_proxies)
-        region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
-        
-        selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
-        server_count = st.number_input("Total Number of Servers:", min_value=1, max_value=50, value=1)
-        
-        if st.button("🚀 Start Deployment"):
-            if not selected_region_labels:
-                st.error("Please select at least one region.")
-            else:
-                selected_codes = [region_options[lbl] for lbl in selected_region_labels]
-                num_regions = len(selected_codes)
-                base_per = server_count // num_regions
-                remainder = server_count % num_regions
-                
-                status_box = st.empty()
-                progress_bar = st.progress(0)
-                
-                tasks = []
-                counter = 0
-                for idx, code in enumerate(selected_codes):
-                    count_for_reg = base_per + (1 if idx < remainder else 0)
-                    for _ in range(count_for_reg):
-                        counter += 1
-                        tasks.append((counter, code))
-                
-                results = []
-                completed_count = 0
-                status_box.info(f"⚡ Deploying {server_count} server(s) in parallel...")
-
-                # تنفيذ بالتوازي باستخدام Threads
-                with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
-                    futures = [
-                        executor.submit(deploy_single_server, c, reg, os_id, current_api_key, current_proxies)
-                        for c, reg in tasks
-                    ]
+        os_id, os_name = get_centos_os_id(current_api_key, current_proxies)
+        if not os_id:
+            st.error("Could not fetch CentOS OS ID. Check API Key/Proxy.")
+        else:
+            st.success(f"Target OS: **{os_name}** (ID: `{os_id}`)")
+            
+            regions_list = get_vultr_regions(current_api_key, current_proxies)
+            region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
+            
+            selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
+            server_count = st.number_input("Total Number of Servers:", min_value=1, max_value=50, value=1)
+            
+            if st.button("🚀 Start Deployment"):
+                if not selected_region_labels:
+                    st.error("Please select at least one region.")
+                else:
+                    selected_codes = [region_options[lbl] for lbl in selected_region_labels]
+                    num_regions = len(selected_codes)
+                    base_per = server_count // num_regions
+                    remainder = server_count % num_regions
                     
-                    for future in as_completed(futures):
-                        success, formatted_res, err = future.result()
-                        completed_count += 1
-                        progress_bar.progress(completed_count / server_count)
-                        
-                        if success and formatted_res:
-                            results.append(formatted_res)
-                            with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
-                                f_out.write(formatted_res + "\n")
-                        else:
-                            st.error(f"Deployment Error: {err}")
-                
-                status_box.success("🎉 Deployment Complete!")
-                st.text_area("Created Servers List (ip,port,user,pass):", value="\n".join(results), height=150)
+                    status_box = st.empty()
+                    progress_bar = st.progress(0)
+                    
+                    tasks = []
+                    counter = 0
+                    for idx, code in enumerate(selected_codes):
+                        count_for_reg = base_per + (1 if idx < remainder else 0)
+                        for _ in range(count_for_reg):
+                            counter += 1
+                            tasks.append((counter, code))
+                    
+                    results = []
+                    completed_count = 0
+                    status_box.info(f"⚡ Deploying {server_count} server(s) in parallel...")
 
-# --- TAB 3: حذف السيرفرات (مسرّعة بـ Threads) ---
+                    with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
+                        futures = [
+                            executor.submit(deploy_single_server, c, reg, os_id, current_api_key, current_proxies)
+                            for c, reg in tasks
+                        ]
+                        
+                        for future in as_completed(futures):
+                            success_dep, formatted_res, err = future.result()
+                            completed_count += 1
+                            progress_bar.progress(completed_count / server_count)
+                            
+                            if success_dep and formatted_res:
+                                results.append(formatted_res)
+                                with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
+                                    f_out.write(formatted_res + "\n")
+                            else:
+                                st.error(f"Deployment Error: {err}")
+                    
+                    status_box.success("🎉 Deployment Complete!")
+                    st.text_area("Created Servers List (ip,port,user,pass):", value="\n".join(results), height=150)
+
+# --- TAB 3: حذف السيرفرات ---
 with tab3:
     st.subheader("Delete Instances")
     del_mode = st.radio("Delete Option:", [
@@ -373,13 +401,12 @@ with tab3:
         "🔥 DANGER: Wipe ALL Instances"
     ])
     
-    # 1. تحديد السيرفرات بواسطة Checkbox
     if del_mode == "☑️ Checkbox Selection (Select & Delete)":
         
         if f"cached_instances_{selected_acc_name}" not in st.session_state or st.button("🔄 Reload Server List"):
-            st.session_state[f"cached_instances_{selected_acc_name}"] = get_all_instances(current_api_key, current_proxies)
+            _, st.session_state[f"cached_instances_{selected_acc_name}"], _ = get_all_instances(current_api_key, current_proxies)
             
-        instances = st.session_state[f"cached_instances_{selected_acc_name}"]
+        instances = st.session_state.get(f"cached_instances_{selected_acc_name}", [])
         
         if not instances:
             st.info("No active instances found in this account.")
@@ -440,19 +467,18 @@ with tab3:
                         }
                         for future in as_completed(futures):
                             ip = futures[future]
-                            success, _ = future.result()
-                            if success:
+                            success_del, _ = future.result()
+                            if success_del:
                                 st.success(f"✅ Deleted server: {ip}")
                                 success_count += 1
                             else:
                                 st.error(f"❌ Failed to delete server: {ip}")
                     
                     status_del.success(f"Process finished! Total deleted: {success_count}")
-                    st.session_state[f"cached_instances_{selected_acc_name}"] = get_all_instances(current_api_key, current_proxies)
+                    _, st.session_state[f"cached_instances_{selected_acc_name}"], _ = get_all_instances(current_api_key, current_proxies)
                     time.sleep(1)
                     st.rerun()
 
-    # 2. خيار كتابة IPs يدوياً
     elif del_mode == "📝 Paste Specific IPs":
         ips_input = st.text_area("Enter IP addresses (one per line or comma separated):")
         if st.button("🗑️ Delete Specified Servers"):
@@ -460,7 +486,7 @@ with tab3:
             if not raw_ips:
                 st.error("Please enter at least one IP.")
             else:
-                instances = get_all_instances(current_api_key, current_proxies)
+                _, instances, _ = get_all_instances(current_api_key, current_proxies)
                 ip_to_id = {inst.get("main_ip"): inst.get("id") for inst in instances if inst.get("main_ip")}
                 
                 targets = [(ip_to_id[target_ip], target_ip) for target_ip in raw_ips if target_ip in ip_to_id]
@@ -478,21 +504,20 @@ with tab3:
                         }
                         for future in as_completed(futures):
                             target_ip = futures[future]
-                            success, _ = future.result()
-                            if success:
+                            success_del, _ = future.result()
+                            if success_del:
                                 st.success(f"Deleted IP: {target_ip}")
                                 success_count += 1
                             else:
                                 st.error(f"Failed to delete {target_ip}")
                     st.info(f"Process complete. Deleted {success_count} server(s).")
                 
-    # 3. خيار مسح الحساب بالكامل بالتوازي
     else:
         st.error("⚠️ WARNING: This will permanently delete ALL instances in the selected account!")
         confirm_code = st.text_input("Type 'DELETE ALL' to confirm:")
         if st.button("🔥 WIPE ALL SERVERS NOW"):
             if confirm_code == "DELETE ALL":
-                instances = get_all_instances(current_api_key, current_proxies)
+                _, instances, _ = get_all_instances(current_api_key, current_proxies)
                 deleted = 0
                 with ThreadPoolExecutor(max_workers=15) as executor:
                     futures = [
@@ -500,8 +525,8 @@ with tab3:
                         for inst in instances
                     ]
                     for future in as_completed(futures):
-                        success, _ = future.result()
-                        if success:
+                        success_del, _ = future.result()
+                        if success_del:
                             deleted += 1
                 st.success(f"Total Wiped: {deleted} instances.")
                 time.sleep(1)
