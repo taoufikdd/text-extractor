@@ -2,21 +2,19 @@ import json
 import os
 import hashlib
 import requests
+import re
 import pandas as pd
 from datetime import date, timedelta
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. إعداد الصفحة والتحديث التلقائي
+# 1. إعداد الصفحة (بدون Autorefresh تلقائي)
 # ==========================================
 st.set_page_config(
     page_title="Live Revenue Tracker",
     page_icon="💰",
     layout="wide"
 )
-
-st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
 USERS_FILE = "users.json"
 
@@ -385,7 +383,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 clicks = int(rep.get("total_click", rep.get("clicks", 0)))
 
                 results.append({
-                    "Account": "",  # سيتم ملؤها لاحقاً
+                    "Account": "",
                     "Offer ID": offer_id,
                     "Offer Name": offer_label,
                     "Sub1 ID": sub1_id,
@@ -475,7 +473,7 @@ if all_data:
     st.markdown("---")
     
     # ==========================================
-    # 🔎 Search Bar + Refresh Button (بدل عنوان Performance Details)
+    # 🔎 Search Bar آمن ومحمي من التجمّد (Safe Search)
     # ==========================================
     perf_col1, perf_col2 = st.columns([8, 2])
     with perf_col1:
@@ -488,12 +486,16 @@ if all_data:
         if st.button("🔄 Refresh Data", type="primary", key="perf_refresh", use_container_width=True):
             st.rerun()
 
-    # تطبيق البحث الشامل إذا كتب المستخدم أي كلمة
+    # تطبيق البحث بآلية حماية حتى لو كتب المستخدم رموز غريبة أو خطأ
     if search_term:
-        search_mask = filtered_df.astype(str).apply(
-            lambda row: row.str.contains(search_term, case=False, na=False)
-        ).any(axis=1)
-        filtered_df = filtered_df[search_mask]
+        try:
+            safe_term = re.escape(search_term) # إلغاء الرموز الخاصة لتفادي أخطاء الـ RegEx
+            search_mask = filtered_df.astype(str).apply(
+                lambda row: row.str.contains(safe_term, case=False, na=False)
+            ).any(axis=1)
+            filtered_df = filtered_df[search_mask]
+        except Exception:
+            pass # عدم تجميد الصفحة في حال وقوع خطأ استثنائي
 
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
     selected_columns = st.multiselect(
