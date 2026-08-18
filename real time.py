@@ -73,54 +73,66 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة الاختبار التشخيصية (Debug Fetcher)
+# 🌐 4. دالة جلب البيانات من المسارات الصحيحة
 # ==========================================
-def test_and_fetch_everflow(api_key, s_date, e_date):
+def fetch_everflow_correct_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
     
-    # رأس الطلب المعتمد
     headers = {
         "x-eflow-api-key": clean_key,
         "Content-Type": "application/json"
     }
 
-    # الهيكل القياسي لطلبات Everflow Affiliates
-    payload = {
-        "from": s_date.strftime("%Y-%m-%d"),
-        "to": e_date.strftime("%Y-%m-%d"),
-        "timezone_id": 54,
-        "currency_id": "USD",
-        "query": {
-            "day_breakdown": False,
-            "group_by": ["sub1"],
-            "filters": []
+    # المسارات الحقيقية المستعملة في Everflow للتقارير
+    endpoints_to_try = [
+        # 1. مسار Offers الرئيسي
+        {
+            "url": "https://api.eflow.team/v1/networks/reporting/offers",
+            "payload": {
+                "from": s_date.strftime("%Y-%m-%d"),
+                "to": e_date.strftime("%Y-%m-%d"),
+                "timezone_id": 54,
+                "currency_id": "USD",
+                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
+            }
+        },
+        # 2. مسار Sub1 الرئيسي
+        {
+            "url": "https://api.eflow.team/v1/networks/reporting/sub1",
+            "payload": {
+                "from": s_date.strftime("%Y-%m-%d"),
+                "to": e_date.strftime("%Y-%m-%d"),
+                "timezone_id": 54,
+                "currency_id": "USD",
+                "query": {"day_breakdown": False, "group_by": ["sub1"], "filters": []}
+            }
+        },
+        # 3. مسار Custom Reporting
+        {
+            "url": "https://api.eflow.team/v1/networks/reporting/custom",
+            "payload": {
+                "from": s_date.strftime("%Y-%m-%d"),
+                "to": e_date.strftime("%Y-%m-%d"),
+                "timezone_id": 54,
+                "currency_id": "USD",
+                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
+            }
         }
-    }
-
-    # اختبار أفضل 2 مسارات مخصصة للـ Affiliates
-    endpoints = [
-        "https://api.eflow.team/v1/affiliates/reporting/custom",
-        "https://api.eflow.team/v1/affiliates/reporting/offers"
     ]
 
     debug_logs = []
-    
-    for url in endpoints:
-        # إذا كان المسار يستعلم عن العروض نغير المجموعات إلى offer
-        curr_payload = payload.copy()
-        if "offers" in url:
-            curr_payload["query"]["group_by"] = ["offer"]
 
+    for ep in endpoints_to_try:
+        url = ep["url"]
+        payload = ep["payload"]
         try:
-            res = requests.post(url, headers=headers, json=curr_payload, timeout=10)
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
             
-            # تسجيل الاستجابة للـ Debug
-            log_entry = {
+            debug_logs.append({
                 "url": url,
                 "status_code": res.status_code,
                 "response_text": res.text[:300]
-            }
-            debug_logs.append(log_entry)
+            })
 
             if res.status_code == 200:
                 data = res.json()
@@ -130,7 +142,7 @@ def test_and_fetch_everflow(api_key, s_date, e_date):
                     cols = row.get("columns", [])
                     rep = row.get("reporting", {})
                     
-                    label = "General"
+                    label = "Offer / General"
                     if cols:
                         label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
                     
@@ -144,7 +156,8 @@ def test_and_fetch_everflow(api_key, s_date, e_date):
                         "Conversions": conversions,
                         "Revenue ($)": revenue
                     })
-                return results, debug_logs
+                if results:
+                    return results, debug_logs
         except Exception as e:
             debug_logs.append({"url": url, "error": str(e)})
 
@@ -162,7 +175,7 @@ if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res, logs = test_and_fetch_everflow(key, start_date, end_date)
+        res, logs = fetch_everflow_correct_data(key, start_date, end_date)
         all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
@@ -189,8 +202,7 @@ if all_data:
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم جلب أي أرباح. تفقد قسم التشخيص (Debugging) أسفله لمعرفة الاستجابة:")
+        st.warning("لم يتم العثور على أي أرباح. تفقد قسم التشخيص أسفله لمعرفة النتيجة:")
         
-        # قسم طباعة أخطاء الاستجابة لمعرفة السبب بدقة
-        with st.expander("🔍 Debugging Info (استجابة الـ API الحقيقية)", expanded=True):
+        with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
