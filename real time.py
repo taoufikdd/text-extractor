@@ -385,6 +385,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 clicks = int(rep.get("total_click", rep.get("clicks", 0)))
 
                 results.append({
+                    "Account": "",  # سيتم ملؤها لاحقاً
                     "Offer ID": offer_id,
                     "Offer Name": offer_label,
                     "Sub1 ID": sub1_id,
@@ -473,13 +474,26 @@ if all_data:
 
     st.markdown("---")
     
-    # تم وضع زر Refresh Data هنا على اليمين مقابل Performance Details
+    # ==========================================
+    # 🔎 Search Bar + Refresh Button (بدل عنوان Performance Details)
+    # ==========================================
     perf_col1, perf_col2 = st.columns([8, 2])
     with perf_col1:
-        st.subheader("📊 Performance Details")
+        search_term = st.text_input(
+            "🔍 Quick Search:", 
+            placeholder="Search offer name, sub1, account...", 
+            label_visibility="collapsed"
+        ).strip()
     with perf_col2:
         if st.button("🔄 Refresh Data", type="primary", key="perf_refresh", use_container_width=True):
             st.rerun()
+
+    # تطبيق البحث الشامل إذا كتب المستخدم أي كلمة
+    if search_term:
+        search_mask = filtered_df.astype(str).apply(
+            lambda row: row.str.contains(search_term, case=False, na=False)
+        ).any(axis=1)
+        filtered_df = filtered_df[search_mask]
 
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
     selected_columns = st.multiselect(
