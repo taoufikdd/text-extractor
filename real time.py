@@ -44,7 +44,7 @@ if st.session_state["theme"] == "light":
                 color: #1c1e21 !important;
             }
 
-            /* إصلاح خانات المدخلات (text_input, password, selectbox) بالكامل */
+            /* إصلاح الخانات والـ SelectBox */
             div[data-baseweb="input"], 
             div[data-baseweb="input"] > div,
             div[data-baseweb="select"] > div,
@@ -54,9 +54,21 @@ if st.session_state["theme"] == "light":
                 border-color: #ced4da !important;
             }
             
-            /* لون الحدود عند التركيز فوك الخانة */
             div[data-baseweb="input"]:focus-within {
                 border-color: #0d6efd !important;
+            }
+
+            /* إصلاح الأزرار (Logout / Light Mode / Buttons) */
+            .stButton > button {
+                background-color: #ffffff !important;
+                color: #1c1e21 !important;
+                border: 1px solid #ced4da !important;
+                box-shadow: none !important;
+            }
+            .stButton > button:hover {
+                background-color: #f8f9fa !important;
+                border-color: #adb5bd !important;
+                color: #000000 !important;
             }
 
             /* إصلاح الـ Multiselect Tags */
@@ -65,11 +77,16 @@ if st.session_state["theme"] == "light":
                 color: #1c1e21 !important;
             }
 
-            /* إصلاح الجدول DataFrame */
-            [data-testid="stDataFrame"] {
+            /* إصلاح الجدول بالكامل (DataFrame / Table) */
+            [data-testid="stDataFrame"], 
+            [data-testid="stDataFrame"] > div, 
+            [data-testid="stDataFrame"] canvas,
+            [data-testid="stDataFrame"] iframe {
                 background-color: #ffffff !important;
             }
-            [data-testid="stDataFrame"] div {
+
+            /* فرض اللون الأبيض لنصوص الجدول وعناصره */
+            [data-testid="stDataFrame"] * {
                 color: #1c1e21 !important;
             }
             
@@ -460,6 +477,7 @@ if all_data:
         else:
             display_df = df[selected_columns]
 
+        # استعمال st.dataframe المباشر مع استهداف الـ CSS لفرض اللون الأبيض
         format_dict = {"Revenue ($)": "${:,.2f}"} if "Revenue ($)" in selected_columns else {}
         st.dataframe(
             display_df.style.format(format_dict),
