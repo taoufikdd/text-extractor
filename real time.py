@@ -29,6 +29,7 @@ if "theme" not in st.session_state:
 if st.session_state["theme"] == "light":
     st.markdown("""
         <style>
+            /* خلفية الصفحة والـ Sidebar */
             .stApp, [data-testid="stMainBlockContainer"] {
                 background-color: #ffffff !important;
                 color: #1c1e21 !important;
@@ -37,9 +38,13 @@ if st.session_state["theme"] == "light":
                 background-color: #f8f9fa !important;
                 border-right: 1px solid #e9ecef;
             }
+            
+            /* النصوص الرئيسية */
             h1, h2, h3, h4, h5, h6, p, label, .stCaption {
                 color: #1c1e21 !important;
             }
+
+            /* إصلاح الخانات والـ SelectBox */
             div[data-baseweb="input"], 
             div[data-baseweb="input"] > div,
             div[data-baseweb="select"] > div,
@@ -48,9 +53,12 @@ if st.session_state["theme"] == "light":
                 color: #1c1e21 !important;
                 border-color: #ced4da !important;
             }
+            
             div[data-baseweb="input"]:focus-within {
                 border-color: #0d6efd !important;
             }
+
+            /* إصلاح الأزرار */
             .stButton > button {
                 background-color: #ffffff !important;
                 color: #1c1e21 !important;
@@ -62,19 +70,26 @@ if st.session_state["theme"] == "light":
                 border-color: #adb5bd !important;
                 color: #000000 !important;
             }
+
+            /* إصلاح الـ Multiselect Tags */
             span[data-baseweb="tag"] {
                 background-color: #e9ecef !important;
                 color: #1c1e21 !important;
             }
+
+            /* إصلاح الجدول بالكامل */
             [data-testid="stDataFrame"], 
             [data-testid="stDataFrame"] > div, 
             [data-testid="stDataFrame"] canvas,
             [data-testid="stDataFrame"] iframe {
                 background-color: #ffffff !important;
             }
+
             [data-testid="stDataFrame"] * {
                 color: #1c1e21 !important;
             }
+            
+            /* Metric Cards */
             [data-testid="stMetricValue"] {
                 color: #0d6efd !important;
             }
@@ -116,7 +131,7 @@ def get_user_data_file(username):
     return f"data_{username}.json"
 
 # ==========================================
-# 🔐 3. نظام تسجيل الدخول
+# 🔐 3. نظام تسجيل الدخول (فقط الحساب الأول admin)
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -129,7 +144,7 @@ if not users_db:
     default_admin_pass = "admin"
     users_db["admin"] = hash_password(default_admin_pass)
     save_json(USERS_FILE, users_db)
-    save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}, "account_groups": {}})
+    save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}})
 
 if not st.session_state["authenticated"]:
     t_col1, t_col2 = st.columns([8, 2])
@@ -166,16 +181,13 @@ if not st.session_state["authenticated"]:
 current_user = st.session_state["username"]
 USER_DATA_FILE = get_user_data_file(current_user)
 
-user_data = load_json(USER_DATA_FILE, {"api_keys": [], "sub1_names": {}, "account_groups": {}})
+user_data = load_json(USER_DATA_FILE, {"api_keys": [], "sub1_names": {}})
 
 if "api_keys" not in st.session_state:
     st.session_state["api_keys"] = user_data.get("api_keys", [])
 
 if "sub1_names" not in st.session_state:
     st.session_state["sub1_names"] = user_data.get("sub1_names", {})
-
-if "account_groups" not in st.session_state:
-    st.session_state["account_groups"] = user_data.get("account_groups", {})
 
 # ==========================================
 # ⚙️ 5. Sidebar (الإعدادات والتحكم)
@@ -199,7 +211,6 @@ if st.sidebar.button("🚪 Logout", use_container_width=True):
     st.session_state["username"] = ""
     st.session_state.pop("api_keys", None)
     st.session_state.pop("sub1_names", None)
-    st.session_state.pop("account_groups", None)
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -228,8 +239,8 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- إدارة المفاتيح والمجموعات محمية بالكود 123 ---
-st.sidebar.subheader("🔑 Add / Manage API Keys & Groups")
+# --- إدارة المفاتيح محمية بالكود 123 ---
+st.sidebar.subheader("🔑 Add / Manage API Keys")
 api_pin_code = st.sidebar.text_input("Enter Passcode to Manage Keys:", type="password", key="api_pin_input")
 
 if api_pin_code == "123":
@@ -245,45 +256,12 @@ if api_pin_code == "123":
             
             save_json(USER_DATA_FILE, {
                 "api_keys": st.session_state["api_keys"],
-                "sub1_names": st.session_state["sub1_names"],
-                "account_groups": st.session_state["account_groups"]
+                "sub1_names": st.session_state["sub1_names"]
             })
             st.sidebar.success("Key Added!")
             st.rerun()
 
     if st.session_state["api_keys"]:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📁 Account Groups")
-        
-        all_account_names = [acc.get("name") for acc in st.session_state["api_keys"]]
-        
-        group_name = st.sidebar.text_input("Group Name (e.g. Group 1):")
-        selected_accs_for_group = st.sidebar.multiselect("Select Accounts for Group:", options=all_account_names)
-        
-        if st.sidebar.button("💾 Save / Update Group"):
-            if group_name.strip() and selected_accs_for_group:
-                st.session_state["account_groups"][group_name.strip()] = selected_accs_for_group
-                save_json(USER_DATA_FILE, {
-                    "api_keys": st.session_state["api_keys"],
-                    "sub1_names": st.session_state["sub1_names"],
-                    "account_groups": st.session_state["account_groups"]
-                })
-                st.sidebar.success(f"Group '{group_name}' Saved!")
-                st.rerun()
-
-        if st.session_state["account_groups"]:
-            for g_name, g_accs in list(st.session_state["account_groups"].items()):
-                g_col1, g_col2 = st.sidebar.columns([3, 1])
-                g_col1.write(f"📂 **{g_name}** ({len(g_accs)} accs)")
-                if g_col2.button("❌", key=f"del_g_{g_name}"):
-                    st.session_state["account_groups"].pop(g_name)
-                    save_json(USER_DATA_FILE, {
-                        "api_keys": st.session_state["api_keys"],
-                        "sub1_names": st.session_state["sub1_names"],
-                        "account_groups": st.session_state["account_groups"]
-                    })
-                    st.rerun()
-
         st.sidebar.markdown("---")
         st.sidebar.subheader("📋 Active Keys")
         for idx, acc in enumerate(list(st.session_state["api_keys"])):
@@ -292,16 +270,10 @@ if api_pin_code == "123":
             masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
             col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
             if col2.button("❌", key=f"del_{idx}"):
-                removed_acc = st.session_state["api_keys"].pop(idx)
-                # Remove from groups if exists
-                for g_name, g_accs in st.session_state["account_groups"].items():
-                    if removed_acc.get("name") in g_accs:
-                        g_accs.remove(removed_acc.get("name"))
-                
+                st.session_state["api_keys"].pop(idx)
                 save_json(USER_DATA_FILE, {
                     "api_keys": st.session_state["api_keys"],
-                    "sub1_names": st.session_state["sub1_names"],
-                    "account_groups": st.session_state["account_groups"]
+                    "sub1_names": st.session_state["sub1_names"]
                 })
                 st.rerun()
 
@@ -327,8 +299,7 @@ if st.session_state["api_keys"]:
                         st.session_state["sub1_names"][sid] = new_s
                         save_json(USER_DATA_FILE, {
                             "api_keys": st.session_state["api_keys"],
-                            "sub1_names": st.session_state["sub1_names"],
-                            "account_groups": st.session_state["account_groups"]
+                            "sub1_names": st.session_state["sub1_names"]
                         })
             else:
                 st.info("No Sub1 IDs fetched yet.")
@@ -404,8 +375,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                     st.session_state["sub1_names"][sub1_id] = sub1_id
                     save_json(USER_DATA_FILE, {
                         "api_keys": st.session_state["api_keys"],
-                        "sub1_names": st.session_state["sub1_names"],
-                        "account_groups": st.session_state["account_groups"]
+                        "sub1_names": st.session_state["sub1_names"]
                     })
 
                 custom_sub1_name = st.session_state["sub1_names"].get(sub1_id, sub1_id)
@@ -456,23 +426,12 @@ if all_data:
     df = pd.DataFrame(all_data)
 
     # ==========================================
-    # 🔍 خيارات الفلترة والمجموعات (Filter Options & Group Selector)
+    # 🔍 خيارات الفلترة (Filter Options)
     # ==========================================
     st.markdown("---")
-    st.subheader("🔍 Filter Data & Select Group")
+    st.subheader("🔍 Filter Data")
     
-    group_col, f_col1, f_col2 = st.columns([3, 3, 3])
-    
-    # اختيار المجموعة
-    with group_col:
-        group_options = ["All Accounts"] + list(st.session_state["account_groups"].keys())
-        selected_group = st.selectbox("📂 Select Group:", options=group_options)
-
-    # تطبيق فلتر المجموعة أولاً
-    filtered_df = df.copy()
-    if selected_group != "All Accounts":
-        allowed_accounts = st.session_state["account_groups"].get(selected_group, [])
-        filtered_df = filtered_df[filtered_df["Account"].isin(allowed_accounts)]
+    f_col1, f_col2 = st.columns(2)
     
     with f_col1:
         filter_type = st.selectbox(
@@ -480,29 +439,31 @@ if all_data:
             ["All", "Offer Name / ID", "Sub1 ID", "Sub1 Name"]
         )
 
+    filtered_df = df.copy()
+
     with f_col2:
         if filter_type == "Offer Name / ID":
-            unique_offers = sorted(filtered_df["Offer Name"].unique())
+            unique_offers = sorted(df["Offer Name"].unique())
             selected_offer = st.multiselect("Select Offers:", options=unique_offers, default=unique_offers)
             if selected_offer:
                 filtered_df = filtered_df[filtered_df["Offer Name"].isin(selected_offer)]
         
         elif filter_type == "Sub1 ID":
-            unique_sub1_ids = sorted(filtered_df["Sub1 ID"].unique())
+            unique_sub1_ids = sorted(df["Sub1 ID"].unique())
             selected_sub1_ids = st.multiselect("Select Sub1 IDs:", options=unique_sub1_ids, default=unique_sub1_ids)
             if selected_sub1_ids:
                 filtered_df = filtered_df[filtered_df["Sub1 ID"].isin(selected_sub1_ids)]
                 
         elif filter_type == "Sub1 Name":
-            unique_sub1_names = sorted(filtered_df["Sub1 Name"].unique())
+            unique_sub1_names = sorted(df["Sub1 Name"].unique())
             selected_sub1_names = st.multiselect("Select Sub1 Names:", options=unique_sub1_names, default=unique_sub1_names)
             if selected_sub1_names:
                 filtered_df = filtered_df[filtered_df["Sub1 Name"].isin(selected_sub1_names)]
 
     # حساب المجاميع بناءً على البيانات المفلترة فقط
-    total_rev = filtered_df["Revenue ($)"].sum() if not filtered_df.empty else 0.0
-    total_conv = filtered_df["Conversions"].sum() if not filtered_df.empty else 0
-    total_clicks = filtered_df["Clicks"].sum() if not filtered_df.empty else 0
+    total_rev = filtered_df["Revenue ($)"].sum()
+    total_conv = filtered_df["Conversions"].sum()
+    total_clicks = filtered_df["Clicks"].sum()
 
     st.markdown("---")
     col1, col2, col3 = st.columns(3)
@@ -512,7 +473,7 @@ if all_data:
 
     st.markdown("---")
     
-    # زر Refresh Data
+    # تم وضع زر Refresh Data هنا على اليمين مقابل Performance Details
     perf_col1, perf_col2 = st.columns([8, 2])
     with perf_col1:
         st.subheader("📊 Performance Details")
@@ -528,23 +489,20 @@ if all_data:
     )
 
     if selected_columns:
-        if not filtered_df.empty:
-            group_keys = [col for col in selected_columns if col in ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name"]]
-            num_metrics = [col for col in selected_columns if col in ["Clicks", "Conversions", "Revenue ($)"]]
+        group_keys = [col for col in selected_columns if col in ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name"]]
+        num_metrics = [col for col in selected_columns if col in ["Clicks", "Conversions", "Revenue ($)"]]
 
-            if group_keys and num_metrics:
-                display_df = filtered_df.groupby(group_keys, as_index=False)[num_metrics].sum()
-                display_df = display_df[selected_columns]
-            else:
-                display_df = filtered_df[selected_columns]
-
-            format_dict = {"Revenue ($)": "${:,.2f}"} if "Revenue ($)" in selected_columns else {}
-            st.dataframe(
-                display_df.style.format(format_dict),
-                use_container_width=True
-            )
+        if group_keys and num_metrics:
+            display_df = filtered_df.groupby(group_keys, as_index=False)[num_metrics].sum()
+            display_df = display_df[selected_columns]
         else:
-            st.info("لا توجد بيانات للمجموعة أو الفلتر المحدد.")
+            display_df = filtered_df[selected_columns]
+
+        format_dict = {"Revenue ($)": "${:,.2f}"} if "Revenue ($)" in selected_columns else {}
+        st.dataframe(
+            display_df.style.format(format_dict),
+            use_container_width=True
+        )
     else:
         st.warning("اختر عموداً واحداً على الأقل للعرض.")
 else:
