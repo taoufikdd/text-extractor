@@ -58,7 +58,7 @@ if st.session_state["theme"] == "light":
                 border-color: #0d6efd !important;
             }
 
-            /* إصلاح الأزرار (Logout / Light Mode / Buttons) */
+            /* إصلاح الأزرار */
             .stButton > button {
                 background-color: #ffffff !important;
                 color: #1c1e21 !important;
@@ -77,7 +77,7 @@ if st.session_state["theme"] == "light":
                 color: #1c1e21 !important;
             }
 
-            /* إصلاح الجدول بالكامل (DataFrame / Table) */
+            /* إصلاح الجدول بالكامل */
             [data-testid="stDataFrame"], 
             [data-testid="stDataFrame"] > div, 
             [data-testid="stDataFrame"] canvas,
@@ -85,7 +85,6 @@ if st.session_state["theme"] == "light":
                 background-color: #ffffff !important;
             }
 
-            /* فرض اللون الأبيض لنصوص الجدول وعناصره */
             [data-testid="stDataFrame"] * {
                 color: #1c1e21 !important;
             }
@@ -132,7 +131,7 @@ def get_user_data_file(username):
     return f"data_{username}.json"
 
 # ==========================================
-# 🔐 3. نظام تسجيل الدخول مع Admin تلقائي
+# 🔐 3. نظام تسجيل الدخول (فقط الحساب الأول admin)
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -141,6 +140,7 @@ if "username" not in st.session_state:
 
 users_db = load_json(USERS_FILE, {})
 
+# إنشاء حساب أدمن تلقائي عند بداية التشغيل
 if not users_db:
     default_admin_pass = "admin"
     users_db["admin"] = hash_password(default_admin_pass)
@@ -160,44 +160,19 @@ if not st.session_state["authenticated"]:
                 st.rerun()
 
     st.title("🔐 Authentication Required")
+    st.subheader("Login to your dashboard")
     
-    tab1, tab2 = st.tabs(["🔑 Login", "📝 Create Account"])
-
-    with tab1:
-        st.subheader("Login to your dashboard")
-        login_user = st.text_input("Username", key="l_user").strip().lower()
-        login_pass = st.text_input("Password", type="password", key="l_pass")
-        
-        if st.button("Login", type="primary", key="btn_login"):
-            if login_user in users_db and users_db[login_user] == hash_password(login_pass):
-                st.session_state["authenticated"] = True
-                st.session_state["username"] = login_user
-                st.success("Logged in successfully!")
-                st.rerun()
-            else:
-                st.error("Invalid Username or Password!")
-
-    with tab2:
-        st.subheader("Create a new account")
-        new_user = st.text_input("Choose Username", key="reg_user").strip().lower()
-        new_pass = st.text_input("Choose Password", type="password", key="reg_pass")
-        confirm_pass = st.text_input("Confirm Password", type="password", key="reg_confirm")
-
-        if st.button("Register", key="btn_reg"):
-            if not new_user or not new_pass or not confirm_pass:
-                st.warning("Please fill in all fields.")
-            elif new_user in users_db:
-                st.error("Username already exists! Choose another one.")
-            elif new_pass != confirm_pass:
-                st.error("Passwords do not match!")
-            else:
-                users_db[new_user] = hash_password(new_pass)
-                save_json(USERS_FILE, users_db)
-
-                user_file = get_user_data_file(new_user)
-                save_json(user_file, {"api_keys": [], "sub1_names": {}})
-
-                st.success("Account created successfully! Go to Login tab.")
+    login_user = st.text_input("Username", key="l_user").strip().lower()
+    login_pass = st.text_input("Password", type="password", key="l_pass")
+    
+    if st.button("Login", type="primary", key="btn_login"):
+        if login_user in users_db and users_db[login_user] == hash_password(login_pass):
+            st.session_state["authenticated"] = True
+            st.session_state["username"] = login_user
+            st.success("Logged in successfully!")
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password!")
 
     st.stop()
 
@@ -448,10 +423,47 @@ else:
 if all_data:
     df = pd.DataFrame(all_data)
 
-    total_rev = df["Revenue ($)"].sum()
-    total_conv = df["Conversions"].sum()
-    total_clicks = df["Clicks"].sum()
+    # ==========================================
+    # 🔍 خيارات الفلترة الجديدة (Filter Options)
+    # ==========================================
+    st.markdown("---")
+    st.subheader("🔍 Filter Data")
+    
+    f_col1, f_col2 = st.columns(2)
+    
+    with f_col1:
+        filter_type = st.selectbox(
+            "Filter By:",
+            ["All", "Offer Name / ID", "Sub1 ID", "Sub1 Name"]
+        )
 
+    filtered_df = df.copy()
+
+    with f_col2:
+        if filter_type == "Offer Name / ID":
+            unique_offers = sorted(df["Offer Name"].unique())
+            selected_offer = st.multiselect("Select Offers:", options=unique_offers, default=unique_offers)
+            if selected_offer:
+                filtered_df = filtered_df[filtered_df["Offer Name"].isin(selected_offer)]
+        
+        elif filter_type == "Sub1 ID":
+            unique_sub1_ids = sorted(df["Sub1 ID"].unique())
+            selected_sub1_ids = st.multiselect("Select Sub1 IDs:", options=unique_sub1_ids, default=unique_sub1_ids)
+            if selected_sub1_ids:
+                filtered_df = filtered_df[filtered_df["Sub1 ID"].isin(selected_sub1_ids)]
+                
+        elif filter_type == "Sub1 Name":
+            unique_sub1_names = sorted(df["Sub1 Name"].unique())
+            selected_sub1_names = st.multiselect("Select Sub1 Names:", options=unique_sub1_names, default=unique_sub1_names)
+            if selected_sub1_names:
+                filtered_df = filtered_df[filtered_df["Sub1 Name"].isin(selected_sub1_names)]
+
+    # حساب المجاميع بناءً على البيانات المفلترة فقط
+    total_rev = filtered_df["Revenue ($)"].sum()
+    total_conv = filtered_df["Conversions"].sum()
+    total_clicks = filtered_df["Clicks"].sum()
+
+    st.markdown("---")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Total Revenue", f"${total_rev:,.2f}")
     col2.metric("🎯 Total Conversions", f"{total_conv:,}")
@@ -472,12 +484,11 @@ if all_data:
         num_metrics = [col for col in selected_columns if col in ["Clicks", "Conversions", "Revenue ($)"]]
 
         if group_keys and num_metrics:
-            display_df = df.groupby(group_keys, as_index=False)[num_metrics].sum()
+            display_df = filtered_df.groupby(group_keys, as_index=False)[num_metrics].sum()
             display_df = display_df[selected_columns]
         else:
-            display_df = df[selected_columns]
+            display_df = filtered_df[selected_columns]
 
-        # استعمال st.dataframe المباشر مع استهداف الـ CSS لفرض اللون الأبيض
         format_dict = {"Revenue ($)": "${:,.2f}"} if "Revenue ($)" in selected_columns else {}
         st.dataframe(
             display_df.style.format(format_dict),
