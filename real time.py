@@ -21,6 +21,48 @@ st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 USERS_FILE = "users.json"
 
 # ==========================================
+# 🎨 التحكم في المظهر (Dark / Light Theme)
+# ==========================================
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "dark"
+
+if st.session_state["theme"] == "light":
+    st.markdown("""
+        <style>
+            .stApp {
+                background-color: #ffffff !important;
+                color: #111111 !important;
+            }
+            [data-testid="stSidebar"] {
+                background-color: #f4f6f9 !important;
+            }
+            .stMarkdown, p, h1, h2, h3, h4, h5, h6, span, label {
+                color: #111111 !important;
+            }
+            div[data-baseweb="input"] > div {
+                background-color: #ffffff !important;
+                color: #111111 !important;
+                border: 1px solid #cccccc !important;
+            }
+            input {
+                color: #111111 !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("""
+        <style>
+            .stApp {
+                background-color: #0e1117 !important;
+                color: #ffffff !important;
+            }
+            [data-testid="stSidebar"] {
+                background-color: #161b22 !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+# ==========================================
 # 💾 2. دالّات إدارة البيانات والملفات
 # ==========================================
 def load_json(filepath, default):
@@ -59,6 +101,18 @@ if not users_db:
     save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}})
 
 if not st.session_state["authenticated"]:
+    # زر تغيير المظهر في صفحة اللوجين
+    t_col1, t_col2 = st.columns([8, 2])
+    with t_col2:
+        if st.session_state["theme"] == "dark":
+            if st.button("☀️ Light Mode"):
+                st.session_state["theme"] = "light"
+                st.rerun()
+        else:
+            if st.button("🌙 Dark Mode"):
+                st.session_state["theme"] = "dark"
+                st.rerun()
+
     st.title("🔐 Authentication Required")
     
     tab1, tab2 = st.tabs(["🔑 Login", "📝 Create Account"])
@@ -122,7 +176,17 @@ if "sub1_names" not in st.session_state:
 # ==========================================
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 
-if st.sidebar.button("🚪 Logout"):
+# زر تبديل الثيم من القائمة الجانبية
+if st.session_state["theme"] == "dark":
+    if st.sidebar.button("☀️ Light Mode", use_container_width=True):
+        st.session_state["theme"] = "light"
+        st.rerun()
+else:
+    if st.sidebar.button("🌙 Dark Mode", use_container_width=True):
+        st.session_state["theme"] = "dark"
+        st.rerun()
+
+if st.sidebar.button("🚪 Logout", use_container_width=True):
     st.session_state["authenticated"] = False
     st.session_state["username"] = ""
     st.session_state.pop("api_keys", None)
