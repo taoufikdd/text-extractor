@@ -15,6 +15,7 @@ st.set_page_config(
     layout="wide"
 )
 
+# تحديث تلقائي للصفحة كل 30 ثانية
 st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
 CONFIG_FILE = "affiliate_config.json"
@@ -90,7 +91,7 @@ if "config_loaded" not in st.session_state:
     st.session_state["config_loaded"] = True
 
 # ==========================================
-# ⚙️ 4. Sidebar: التحكم والخيارات حسب الرتبة
+# ⚙️ 4. Sidebar: التحكم والخيارات
 # ==========================================
 user_role = st.session_state.get("role", "user")
 st.sidebar.title("⚙️ Control Panel")
@@ -140,17 +141,17 @@ if user_role == "admin":
     with st.sidebar.expander("➕ Add Sponsor API"):
         s_name = st.text_input("Sponsor Name (e.g. MM):")
         s_api_key = st.text_input("API Key / Token:", type="password")
-        s_endpoint = st.text_input(
-            "API Endpoint URL:", 
-            value="https://api.eflow.team/v1/affiliates/reporting/sub1"
+        s_domain = st.text_input(
+            "Domain (e.g. api.eflow.team):", 
+            value="api.eflow.team"
         )
         
         if st.button("Add Sponsor"):
-            if s_name and s_api_key and s_endpoint:
+            if s_name and s_api_key and s_domain:
                 st.session_state["sponsors"].append({
                     "name": s_name.strip(),
                     "api_key": s_api_key.strip(),
-                    "endpoint": s_endpoint.strip()
+                    "endpoint": s_domain.strip()
                 })
                 save_config()
                 st.success(f"Added Sponsor: {s_name}")
@@ -169,38 +170,54 @@ if user_role == "admin":
                     st.rerun()
 
 # ==========================================
-# 🌐 5. دالة جلب البيانات مع دعم كامل لـ Everflow API
+# 🌐 5. دالة جلب البيانات الذكية (تلقائية بالكامل)
 # ==========================================
 def fetch_sponsor_data(sponsor, s_date, e_date):
-    endpoint = sponsor["endpoint"].strip()
-    api_key = sponsor["api_key"].strip()
+    raw_input = sponsor.get("endpoint", "").strip().lower()
+    api_key = sponsor.get("api_key", "").strip()
     
-    # تصحيح الـ Endpoint تلقائياً إذا كان فيه خطأ
-    if "api.everflow.io" in endpoint:
-        endpoint = endpoint.replace("api.everflow.io", "api.eflow.team")
-        
-    if "eflow" in endpoint.lower() or "everflow" in endpoint.lower():
-        headers = {
-            "x-eflow-api-key": api_key,
-            "Content-Type": "application/json"
+    # تنظيف واستخراج الدومين المباشر
+    domain = raw_input.replace("https://", "").replace("http://", "").split("/")[0]
+    if "everflow.io" in domain:
+        domain = domain.replace("everflow.io", "eflow.team")
+    if not domain:
+        domain = "api.eflow.team"
+
+    headers = {
+        "x-eflow-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "from": s_date.strftime("%Y-%m-%d"),
+        "to": e_date.strftime("%Y-%m-%d"),
+        "timezone_id": 80,
+        "currency_id": "USD",
+        "query": {
+            "day_breakdown": False,
+            "group_by": ["sub1"],
+            "filters": []
         }
-        payload = {
-            "from": s_date.strftime("%Y-%m-%d"),
-            "to": e_date.strftime("%Y-%m-%d"),
-            "timezone_id": 80,
-            "currency_id": "USD",
-            "query": {
-                "day_breakdown": False,
-                "group_by": ["sub1"],
-                "filters": []
-            }
-        }
+    }
+
+    # القائمة التلقائية لكل مسارات Everflow المتاحة
+    possible_endpoints = [
+        f"https://{domain}/v1/networks/reporting/entity",
+        f"https://{domain}/v1/affiliates/reporting/entity",
+        f"https://{domain}/v1/networks/reporting/custom",
+        f"https://{domain}/v1/affiliates/reporting/custom",
+        f"https://{domain}/v1/networks/affiliates/reporting/sub1"
+    ]
+
+    for endpoint in possible_endpoints:
         try:
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=15)
-            if response.status_code == 200:
-                res_json = response.json()
+            res = requests.post(endpoint, headers=headers, json=payload, timeout=10)
+            
+            if res.status_code == 200:
+                res_json = res.json()
                 table_data = res_json.get("table", [])
                 parsed_items = []
+                
                 for row in table_data:
                     columns = row.get("columns", [])
                     reporting = row.get("reporting", {})
@@ -217,30 +234,16 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
                         "revenue": float(reporting.get("payout", reporting.get("revenue", 0.0)))
                     })
                 return parsed_items
-            else:
-                st.error(f"Everflow Response Error ({response.status_code}): {response.text}")
+            
+            elif res.status_code == 401:
+                st.error(f"❌ Invalid API Key for sponsor: {sponsor['name']}")
                 return None
-        except Exception as e:
-            st.error(f"Connection Error ({sponsor['name']}): {str(e)}")
-            return None
 
-    else:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json"
-        }
-        params = {
-            "start_date": str(s_date),
-            "end_date": str(e_date),
-            "group_by": "sub1"
-        }
-        try:
-            response = requests.get(endpoint, headers=headers, params=params, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-            return None
         except Exception:
-            return None
+            continue
+
+    st.error(f"❌ Could not retrieve data for sponsor: {sponsor['name']}. Please check API Key or Domain.")
+    return None
 
 # ==========================================
 # 📊 6. العرض الرئيسي للبيانات (Dashboard)
