@@ -2,21 +2,19 @@ import json
 import os
 import hashlib
 import requests
+import re
 import pandas as pd
 from datetime import date, timedelta
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. إعداد الصفحة والتحديث التلقائي
+# 1. إعداد الصفحة
 # ==========================================
 st.set_page_config(
     page_title="Live Revenue Tracker",
     page_icon="💰",
     layout="wide"
 )
-
-st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
 USERS_FILE = "users.json"
 
@@ -131,7 +129,7 @@ def get_user_data_file(username):
     return f"data_{username}.json"
 
 # ==========================================
-# 🔐 3. نظام تسجيل الدخول (فقط الحساب الأول admin)
+# 🔐 3. نظام تسجيل الدخول
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -195,6 +193,7 @@ if "sub1_names" not in st.session_state:
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 
 if st.sidebar.button("🔄 Refresh Data", use_container_width=True, key="sb_refresh"):
+    st.cache_data.clear()
     st.rerun()
 
 if st.session_state["theme"] == "dark":
@@ -309,6 +308,7 @@ if st.session_state["api_keys"]:
 # ==========================================
 # 🌐 6. دالة جلب البيانات (Everflow API)
 # ==========================================
+@st.cache_data(ttl=300, show_spinner="Fetching data from Everflow...")
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
     from_str = s_date.strftime("%Y-%m-%d")
@@ -324,8 +324,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
     payload = {
         "from": from_str,
         "to": to_str,
-        "timezone_id": 54,
-        "currency_id": "USD",
+        "timezone_id": 88,
         "columns": [
             {"column": "offer"},
             {"column": "sub1"}
@@ -473,12 +472,13 @@ if all_data:
 
     st.markdown("---")
     
-    # تم وضع زر Refresh Data هنا على اليمين مقابل Performance Details
+    # زر Refresh Data يعتمد فقط على الضغط المباشر مع مسح الكاش
     perf_col1, perf_col2 = st.columns([8, 2])
     with perf_col1:
         st.subheader("📊 Performance Details")
     with perf_col2:
         if st.button("🔄 Refresh Data", type="primary", key="perf_refresh", use_container_width=True):
+            st.cache_data.clear()
             st.rerun()
 
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
