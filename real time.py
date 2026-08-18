@@ -140,7 +140,6 @@ if "username" not in st.session_state:
 
 users_db = load_json(USERS_FILE, {})
 
-# إنشاء حساب أدمن تلقائي عند بداية التشغيل
 if not users_db:
     default_admin_pass = "admin"
     users_db["admin"] = hash_password(default_admin_pass)
@@ -194,6 +193,10 @@ if "sub1_names" not in st.session_state:
 # ⚙️ 5. Sidebar (الإعدادات والتحكم)
 # ==========================================
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
+
+# زر التحديث في الـ Sidebar
+if st.sidebar.button("🔄 Refresh Data", use_container_width=True, key="sb_refresh"):
+    st.rerun()
 
 if st.session_state["theme"] == "dark":
     if st.sidebar.button("☀️ Light Mode", use_container_width=True):
@@ -403,8 +406,14 @@ def fetch_everflow_data(api_key, s_date, e_date):
 # ==========================================
 # 📊 7. العرض الرئيسي
 # ==========================================
-st.title("💵 Live Revenue Tracker")
-st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
+header_col1, header_col2 = st.columns([8, 2])
+with header_col1:
+    st.title("💵 Live Revenue Tracker")
+    st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
+with header_col2:
+    st.write("") # مسافة للضبط
+    if st.button("🔄 Refresh Data", type="primary", key="main_refresh", use_container_width=True):
+        st.rerun()
 
 all_data = []
 all_debug_info = []
@@ -424,7 +433,7 @@ if all_data:
     df = pd.DataFrame(all_data)
 
     # ==========================================
-    # 🔍 خيارات الفلترة الجديدة (Filter Options)
+    # 🔍 خيارات الفلترة (Filter Options)
     # ==========================================
     st.markdown("---")
     st.subheader("🔍 Filter Data")
