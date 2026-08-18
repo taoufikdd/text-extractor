@@ -73,98 +73,77 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات المباشرة
+# 🌐 4. دالة جلب البيانات الدقيقة
 # ==========================================
-def get_affiliate_revenue(api_key, s_date, e_date):
-    headers = {
-        "x-eflow-api-key": api_key.strip(),
-        "Content-Type": "application/json"
-    }
-
-    # Payload متوافق مع Everflow Affiliate API
-    payload = {
-        "from": s_date.strftime("%Y-%m-%d"),
-        "to": e_date.strftime("%Y-%m-%d"),
-        "timezone_id": 80,
-        "currency_id": "USD",
-        "query": {
-            "day_breakdown": False,
-            "group_by": ["sub1"],
-            "filters": []
-        }
-    }
-
-    # قائمة روابط Everflow المخصصة للـ Affiliates
-    endpoints = [
-        "https://api.eflow.team/v1/affiliates/reporting/custom",
-        "https://api.eflow.team/v1/affiliates/reporting/entity",
-        "https://api.eflow.team/v1/affiliates/reporting/offers",
-        "https://api.eflow.team/v1/networks/reporting/custom"
+def fetch_everflow_data(api_key, s_date, e_date):
+    clean_key = api_key.strip()
+    
+    # تجريب الهيدرز المعتمدة في Everflow
+    headers_list = [
+        {"x-eflow-api-key": clean_key, "Content-Type": "application/json"},
+        {"x-key": clean_key, "Content-Type": "application/json"}
     ]
 
-    for url in endpoints:
-        try:
-            # إذا كان الرابط الخاص بالـ Offers نغير الـ group_by إلى offer
-            current_payload = payload.copy()
-            if "offers" in url:
-                current_payload["query"]["group_by"] = ["offer"]
+    # التجارب على مستوى Offer و Sub1
+    payload_templates = [
+        {
+            "from": s_date.strftime("%Y-%m-%d"),
+            "to": e_date.strftime("%Y-%m-%d"),
+            "timezone_id": 54, # Europe/Amsterdam
+            "currency_id": "USD",
+            "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
+        },
+        {
+            "from": s_date.strftime("%Y-%m-%d"),
+            "to": e_date.strftime("%Y-%m-%d"),
+            "timezone_id": 54,
+            "currency_id": "USD",
+            "query": {"day_breakdown": False, "group_by": ["sub1"], "filters": []}
+        }
+    ]
 
-            res = requests.post(url, headers=headers, json=current_payload, timeout=10)
-            
-            if res.status_code == 200:
-                data = res.json()
-                table = data.get("table", [])
-                results = []
-                
-                for row in table:
-                    cols = row.get("columns", [])
-                    rep = row.get("reporting", {})
-                    
-                    label_val = "All / Direct"
-                    if cols:
-                        label_val = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
-                    
-                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                    conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                    clicks = int(rep.get("clicks", 0))
+    endpoints = [
+        "https://api.eflow.team/v1/affiliates/reporting/custom",
+        "https://api.eflow.team/v1/affiliates/reporting/offers",
+        "https://api.eflow.team/v1/affiliates/reporting/sub1"
+    ]
 
-                    if revenue > 0 or conversions > 0 or clicks > 0:
-                        results.append({
-                            "Label / Sub1": label_val,
-                            "Clicks": clicks,
-                            "Conversions": conversions,
-                            "Revenue ($)": revenue
-                        })
-                
-                if results:
-                    return results
+    for headers in headers_list:
+        for payload in payload_templates:
+            for url in endpoints:
+                try:
+                    res = requests.post(url, headers=headers, json=payload, timeout=8)
+                    if res.status_code == 200:
+                        data = res.json()
+                        table = data.get("table", [])
+                        results = []
+                        for row in table:
+                            cols = row.get("columns", [])
+                            rep = row.get("reporting", {})
+                            
+                            label = "General"
+                            if cols:
+                                label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
+                            
+                            revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                            conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
+                            clicks = int(rep.get("clicks", 0))
 
-        except Exception:
-            continue
-
-    # محاولة أخير عبر GET Summary API إذا فشل الـ POST
-    try:
-        summary_url = f"https://api.eflow.team/v1/affiliates/reporting/summary?from={s_date.strftime('%Y-%m-%d')}&to={e_date.strftime('%Y-%m-%d')}"
-        res = requests.get(summary_url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            rep = res.json().get("reporting", {})
-            revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-            conversions = int(rep.get("conversions", 0))
-            clicks = int(rep.get("clicks", 0))
-            if revenue > 0 or conversions > 0 or clicks > 0:
-                return [{
-                    "Label / Sub1": "Total Summary",
-                    "Clicks": clicks,
-                    "Conversions": conversions,
-                    "Revenue ($)": revenue
-                }]
-    except Exception:
-        pass
+                            results.append({
+                                "Item": label,
+                                "Clicks": clicks,
+                                "Conversions": conversions,
+                                "Revenue ($)": revenue
+                            })
+                        if results:
+                            return results
+                except Exception:
+                    continue
 
     return None
 
 # ==========================================
-# 📊 5. العرض
+# 📊 5. عرض النتائج
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 
@@ -174,10 +153,10 @@ if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res = get_affiliate_revenue(key, start_date, end_date)
+        res = fetch_everflow_data(key, start_date, end_date)
         if res:
             for item in res:
-                item["Key ID"] = f"Key #{idx+1}"
+                item["Key"] = f"Account #{idx+1}"
                 all_data.append(item)
 
 if all_data:
@@ -193,11 +172,11 @@ if all_data:
     col3.metric("🖱️ Total Clicks", f"{total_clicks:,}")
 
     st.markdown("---")
-    st.subheader("📊 Breakdown Detail")
+    st.subheader("📊 Performance Details")
     st.dataframe(
-        df[["Key ID", "Label / Sub1", "Clicks", "Conversions", "Revenue ($)"]].style.format({"Revenue ($)": "${:,.2f}"}),
+        df[["Key", "Item", "Clicks", "Conversions", "Revenue ($)"]].style.format({"Revenue ($)": "${:,.2f}"}),
         use_container_width=True
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أي أرباح في هذا التاريخ أو الـ API Key غير صحيح.")
+        st.warning("لم يتم العثور على أي بيانات. تأكد من تحديد التاريخ الصحيح (مثلاً 2026-08-18).")
