@@ -21,79 +21,6 @@ st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 USERS_FILE = "users.json"
 
 # ==========================================
-# 🎨 التحكم في المظهر (Dark / Light Theme)
-# ==========================================
-if "theme" not in st.session_state:
-    st.session_state["theme"] = "dark"
-
-if st.session_state["theme"] == "light":
-    st.markdown("""
-        <style>
-            .stApp, [data-testid="stMainBlockContainer"] {
-                background-color: #ffffff !important;
-                color: #1c1e21 !important;
-            }
-            [data-testid="stSidebar"] {
-                background-color: #f8f9fa !important;
-                border-right: 1px solid #e9ecef;
-            }
-            h1, h2, h3, h4, h5, h6, p, label, .stCaption {
-                color: #1c1e21 !important;
-            }
-            div[data-baseweb="input"], 
-            div[data-baseweb="input"] > div,
-            div[data-baseweb="select"] > div,
-            input {
-                background-color: #ffffff !important;
-                color: #1c1e21 !important;
-                border-color: #ced4da !important;
-            }
-            div[data-baseweb="input"]:focus-within {
-                border-color: #0d6efd !important;
-            }
-            .stButton > button {
-                background-color: #ffffff !important;
-                color: #1c1e21 !important;
-                border: 1px solid #ced4da !important;
-                box-shadow: none !important;
-            }
-            .stButton > button:hover {
-                background-color: #f8f9fa !important;
-                border-color: #adb5bd !important;
-                color: #000000 !important;
-            }
-            span[data-baseweb="tag"] {
-                background-color: #e9ecef !important;
-                color: #1c1e21 !important;
-            }
-            [data-testid="stDataFrame"], 
-            [data-testid="stDataFrame"] > div, 
-            [data-testid="stDataFrame"] canvas,
-            [data-testid="stDataFrame"] iframe {
-                background-color: #ffffff !important;
-            }
-            [data-testid="stDataFrame"] * {
-                color: #1c1e21 !important;
-            }
-            [data-testid="stMetricValue"] {
-                color: #0d6efd !important;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-else:
-    st.markdown("""
-        <style>
-            .stApp {
-                background-color: #0e1117 !important;
-                color: #ffffff !important;
-            }
-            [data-testid="stSidebar"] {
-                background-color: #161b22 !important;
-            }
-        </style>
-    """, unsafe_allow_html=True)
-
-# ==========================================
 # 💾 2. دالّات إدارة البيانات والملفات
 # ==========================================
 def load_json(filepath, default):
@@ -132,17 +59,6 @@ if not users_db:
     save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}, "account_groups": {}})
 
 if not st.session_state["authenticated"]:
-    t_col1, t_col2 = st.columns([8, 2])
-    with t_col2:
-        if st.session_state["theme"] == "dark":
-            if st.button("☀️ Light Mode"):
-                st.session_state["theme"] = "light"
-                st.rerun()
-        else:
-            if st.button("🌙 Dark Mode"):
-                st.session_state["theme"] = "dark"
-                st.rerun()
-
     st.title("🔐 Authentication Required")
     st.subheader("Login to your dashboard")
     
@@ -185,15 +101,6 @@ st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 if st.sidebar.button("🔄 Refresh Data", use_container_width=True, key="sb_refresh"):
     st.rerun()
 
-if st.session_state["theme"] == "dark":
-    if st.sidebar.button("☀️ Light Mode", use_container_width=True):
-        st.session_state["theme"] = "light"
-        st.rerun()
-else:
-    if st.sidebar.button("🌙 Dark Mode", use_container_width=True):
-        st.session_state["theme"] = "dark"
-        st.rerun()
-
 if st.sidebar.button("🚪 Logout", use_container_width=True):
     st.session_state["authenticated"] = False
     st.session_state["username"] = ""
@@ -228,10 +135,15 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- فلترة المجموعات من Sidebar مباشرة ---
+# --- فلترة المجموعات المتعددة من Sidebar مباشرة ---
 st.sidebar.subheader("📂 Active Group Filter")
-group_options = ["All Accounts"] + list(st.session_state["account_groups"].keys())
-selected_active_group = st.sidebar.selectbox("Show Revenue For:", options=group_options, key="active_group_select")
+all_group_names = list(st.session_state["account_groups"].keys())
+selected_active_groups = st.sidebar.multiselect(
+    "Show Revenue For Groups:",
+    options=all_group_names,
+    default=[],
+    help="اختر مجموعة أو أكثر. الحسابات المشتركة لن تتكرر في الحساب."
+)
 
 st.sidebar.markdown("---")
 
@@ -442,14 +354,21 @@ def fetch_everflow_data(api_key, s_date, e_date):
 # 📊 7. العرض الرئيسي
 # ==========================================
 st.title("💵 Live Revenue Tracker")
-st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}** | 📂 Selected Group: **{selected_active_group}**")
+
+# تحديد اسم المجموعات المعروضة في الترويسة
+group_disp = ", ".join(selected_active_groups) if selected_active_groups else "All Accounts"
+st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}** | 📂 Groups: **{group_disp}**")
 
 all_data = []
 all_debug_info = []
 
-# تحديد الحسابات التي يجب جلب بياناتها بناءً على المجموعة المختارة
-if selected_active_group != "All Accounts":
-    target_account_names = st.session_state["account_groups"].get(selected_active_group, [])
+# تجميع الحسابات بدون تكرار (Unique Accounts Set)
+if selected_active_groups:
+    target_account_names = set()
+    for g_name in selected_active_groups:
+        accs = st.session_state["account_groups"].get(g_name, [])
+        target_account_names.update(accs)
+    
     keys_to_fetch = [acc for acc in st.session_state["api_keys"] if acc.get("name") in target_account_names]
 else:
     keys_to_fetch = st.session_state["api_keys"]
@@ -457,7 +376,7 @@ else:
 if not st.session_state["api_keys"]:
     st.info("👈 أدخل Passcode `123` في القائمة الجانبية لإضافة API Keys والحسابات.")
 elif not keys_to_fetch:
-    st.warning(f"المجموعة '{selected_active_group}' لا تحتوي على أي حسابات حالياً.")
+    st.warning("المجموعات المحددة لا تحتوي على أي حسابات حالياً.")
 else:
     for idx, acc in enumerate(keys_to_fetch):
         res, logs = fetch_everflow_data(acc.get("key", ""), start_date, end_date)
@@ -503,7 +422,7 @@ if all_data:
             if selected_sub1_names:
                 filtered_df = filtered_df[filtered_df["Sub1 Name"].isin(selected_sub1_names)]
 
-    # حساب المجاميع الخاصة بالمجموعة المحددة فقط
+    # حساب المجاميع الخاصة بالمجموعات المحددة فقط بدون تكرار
     total_rev = filtered_df["Revenue ($)"].sum() if not filtered_df.empty else 0.0
     total_conv = filtered_df["Conversions"].sum() if not filtered_df.empty else 0
     total_clicks = filtered_df["Clicks"].sum() if not filtered_df.empty else 0
@@ -552,6 +471,6 @@ if all_data:
         st.warning("اختر عموداً واحداً على الأقل للعرض.")
 else:
     if st.session_state["api_keys"] and keys_to_fetch:
-        st.warning("لم يتم العثور على أرباح لهذه المجموعة في الفترة المحددة.")
+        st.warning("لم يتم العثور على أرباح للمجموعات المحددة في الفترة المختارة.")
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
