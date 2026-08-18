@@ -29,23 +29,46 @@ if "theme" not in st.session_state:
 if st.session_state["theme"] == "light":
     st.markdown("""
         <style>
-            .stApp {
+            /* خلفية الصفحة والـ Sidebar */
+            .stApp, [data-testid="stMainBlockContainer"] {
                 background-color: #ffffff !important;
-                color: #111111 !important;
+                color: #1c1e21 !important;
             }
             [data-testid="stSidebar"] {
-                background-color: #f4f6f9 !important;
+                background-color: #f8f9fa !important;
+                border-right: 1px solid #e9ecef;
             }
-            .stMarkdown, p, h1, h2, h3, h4, h5, h6, span, label {
-                color: #111111 !important;
+            
+            /* النصوص الرئيسية */
+            h1, h2, h3, h4, h5, h6, p, label, .stCaption {
+                color: #1c1e21 !important;
             }
-            div[data-baseweb="input"] > div {
+
+            /* إصلاح خانات المدخلات والـ SelectBox */
+            div[data-baseweb="input"] > div, 
+            div[data-baseweb="select"] > div {
                 background-color: #ffffff !important;
-                color: #111111 !important;
-                border: 1px solid #cccccc !important;
+                color: #1c1e21 !important;
+                border: 1px solid #ced4da !important;
             }
-            input {
-                color: #111111 !important;
+            
+            /* إصلاح الـ Multiselect Tags */
+            span[data-baseweb="tag"] {
+                background-color: #e9ecef !important;
+                color: #1c1e21 !important;
+            }
+
+            /* إصلاح الجدول DataFrame */
+            [data-testid="stDataFrame"] {
+                background-color: #ffffff !important;
+            }
+            [data-testid="stDataFrame"] div {
+                color: #1c1e21 !important;
+            }
+            
+            /* Metric Cards */
+            [data-testid="stMetricValue"] {
+                color: #0d6efd !important;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -101,7 +124,6 @@ if not users_db:
     save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}})
 
 if not st.session_state["authenticated"]:
-    # زر تغيير المظهر في صفحة اللوجين
     t_col1, t_col2 = st.columns([8, 2])
     with t_col2:
         if st.session_state["theme"] == "dark":
@@ -117,7 +139,6 @@ if not st.session_state["authenticated"]:
     
     tab1, tab2 = st.tabs(["🔑 Login", "📝 Create Account"])
 
-    # --- تسجيل الدخول ---
     with tab1:
         st.subheader("Login to your dashboard")
         login_user = st.text_input("Username", key="l_user").strip().lower()
@@ -132,7 +153,6 @@ if not st.session_state["authenticated"]:
             else:
                 st.error("Invalid Username or Password!")
 
-    # --- إنشاء حساب جديد ---
     with tab2:
         st.subheader("Create a new account")
         new_user = st.text_input("Choose Username", key="reg_user").strip().lower()
@@ -176,7 +196,6 @@ if "sub1_names" not in st.session_state:
 # ==========================================
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 
-# زر تبديل الثيم من القائمة الجانبية
 if st.session_state["theme"] == "dark":
     if st.sidebar.button("☀️ Light Mode", use_container_width=True):
         st.session_state["theme"] = "light"
