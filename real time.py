@@ -18,10 +18,11 @@ st.set_page_config(
 st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
 CONFIG_FILE = "api_keys.json"
-NAMES_FILE = "offer_names.json"
+OFFER_NAMES_FILE = "offer_names.json"
+SUB1_NAMES_FILE = "sub1_names.json"
 
 # ==========================================
-# 💾 2. إدارة البيانات والتخزين المحلية
+# 💾 2. إدارة البيانات والتخزين المحلي
 # ==========================================
 def load_json(filepath, default):
     if os.path.exists(filepath):
@@ -40,10 +41,13 @@ if "api_keys" not in st.session_state:
     st.session_state["api_keys"] = load_json(CONFIG_FILE, [])
 
 if "offer_names" not in st.session_state:
-    st.session_state["offer_names"] = load_json(NAMES_FILE, {})
+    st.session_state["offer_names"] = load_json(OFFER_NAMES_FILE, {})
+
+if "sub1_names" not in st.session_state:
+    st.session_state["sub1_names"] = load_json(SUB1_NAMES_FILE, {})
 
 # ==========================================
-# ⚙️ 3. Sidebar (إعدادات التاريخ، المفاتيح، والأسماء)
+# ⚙️ 3. Sidebar (الإعدادات والتسميات)
 # ==========================================
 st.sidebar.title("⚙️ Config")
 
@@ -93,51 +97,30 @@ if st.session_state["api_keys"]:
             save_json(CONFIG_FILE, st.session_state["api_keys"])
             st.rerun()
 
-# ==========================================
-# 🌐 4. دالة جلب قائمة الـ Offers المتاحة
-# ==========================================
-def fetch_all_offers(api_keys):
-    found_offers = set()
-    for key in api_keys:
-        headers = {"x-eflow-api-key": key.strip()}
-        try:
-            res = requests.get("https://api.eflow.team/v1/affiliates/offers", headers=headers, timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                offers_list = data.get("offers", []) or data.get("table", [])
-                for off in offers_list:
-                    oid = str(off.get("network_offer_id", off.get("offer_id", off.get("id", ""))))
-                    if oid:
-                        found_offers.add(oid)
-        except Exception:
-            pass
-    return sorted(list(found_offers))
-
-# --- تخصيص أسماء العروض في Sidebar ---
+# --- تسمية الـ Offers و Sub1 يدوياً وفي Sidebar ---
 if st.session_state["api_keys"]:
     st.sidebar.markdown("---")
     st.sidebar.subheader("🏷️ Offer Custom Names")
-    discovered_ids = fetch_all_offers(st.session_state["api_keys"])
-    
-    if discovered_ids:
-        for oid in discovered_ids:
-            current_name = st.session_state["offer_names"].get(oid, "")
-            new_name = st.sidebar.text_input(f"ID: {oid}", value=current_name, key=f"name_{oid}")
-            if new_name != current_name:
-                st.session_state["offer_names"][oid] = new_name
-                save_json(NAMES_FILE, st.session_state["offer_names"])
-    else:
-        st.sidebar.info("أدخل ID يدويًا إن لم تظهر القائمة:")
-        manual_id = st.sidebar.text_input("Offer ID:")
-        manual_name = st.sidebar.text_input("Custom Name:")
-        if st.sidebar.button("💾 Save Name"):
-            if manual_id and manual_name:
-                st.session_state["offer_names"][manual_id.strip()] = manual_name.strip()
-                save_json(NAMES_FILE, st.session_state["offer_names"])
-                st.rerun()
+    if st.session_state["offer_names"]:
+        for oid in sorted(st.session_state["offer_names"].keys()):
+            cur_o = st.session_state["offer_names"].get(oid, "")
+            new_o = st.sidebar.text_input(f"Offer {oid}:", value=cur_o, key=f"o_{oid}")
+            if new_o != cur_o:
+                st.session_state["offer_names"][oid] = new_o
+                save_json(OFFER_NAMES_FILE, st.session_state["offer_names"])
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("👤 Sub1 (User) Custom Names")
+    if st.session_state["sub1_names"]:
+        for sid in sorted(st.session_state["sub1_names"].keys()):
+            cur_s = st.session_state["sub1_names"].get(sid, "")
+            new_s = st.sidebar.text_input(f"Sub1 [{sid}]:", value=cur_s, key=f"s_{sid}")
+            if new_s != cur_s:
+                st.session_state["sub1_names"][sid] = new_s
+                save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
 
 # ==========================================
-# 🌐 5. دالة جلب التقارير بنطاق التاريخ المطلوب
+# 🌐 4. دالة جلب البيانات (Offer + Sub1)
 # ==========================================
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
@@ -151,13 +134,16 @@ def fetch_everflow_data(api_key, s_date, e_date):
 
     url = "https://api.eflow.team/v1/affiliates/reporting/entity/table"
 
-    # استخدام الهيكلية المعتمدة بدقة لجلب البيانات في أي نطاق زمني
+    # طلب التقرير مجمع بـ Offer و Sub1
     payload = {
         "from": from_str,
         "to": to_str,
         "timezone_id": 54,
         "currency_id": "USD",
-        "columns": [{"column": "offer"}]
+        "columns": [
+            {"column": "offer"},
+            {"column": "sub1"}
+        ]
     }
 
     debug_logs = []
@@ -181,11 +167,37 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 cols = row.get("columns", [])
                 rep = row.get("reporting", {})
 
-                offer_id = str(cols[0].get("id", "")) if cols else ""
-                offer_label = cols[0].get("label", offer_id) if cols else "N/A"
+                offer_id = ""
+                offer_label = ""
+                sub1_id = ""
 
-                # استبدال الاسم إذا كان مُعرفاً في offer_names
-                custom_name = st.session_state["offer_names"].get(offer_id, offer_label)
+                # استخراج المعطيات من الأعمدة المرجعة
+                for c in cols:
+                    col_type = c.get("column_type", c.get("id", ""))
+                    if col_type == "offer":
+                        offer_id = str(c.get("id", ""))
+                        offer_label = c.get("label", offer_id)
+                    elif col_type == "sub1":
+                        sub1_id = str(c.get("id", c.get("label", "")))
+
+                if not offer_id and len(cols) > 0:
+                    offer_id = str(cols[0].get("id", ""))
+                    offer_label = cols[0].get("label", offer_id)
+                if not sub1_id and len(cols) > 1:
+                    sub1_id = str(cols[1].get("id", cols[1].get("label", "")))
+
+                # حفظ الـ IDs تلقائياً إذا كانت جديدة لتظهر في القائمة الجانبية
+                if offer_id and offer_id not in st.session_state["offer_names"]:
+                    st.session_state["offer_names"][offer_id] = offer_label
+                    save_json(OFFER_NAMES_FILE, st.session_state["offer_names"])
+
+                if sub1_id and sub1_id not in st.session_state["sub1_names"]:
+                    st.session_state["sub1_names"][sub1_id] = sub1_id
+                    save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
+
+                # جلب الأسماء المخصصة
+                custom_offer_name = st.session_state["offer_names"].get(offer_id, offer_label)
+                custom_sub1_name = st.session_state["sub1_names"].get(sub1_id, sub1_id)
 
                 payout = float(rep.get("payout", rep.get("revenue", 0.0)))
                 conversions = int(rep.get("cv", rep.get("conversions", 0)))
@@ -193,7 +205,9 @@ def fetch_everflow_data(api_key, s_date, e_date):
 
                 results.append({
                     "Offer ID": offer_id,
-                    "Item": custom_name,
+                    "Offer Name": custom_offer_name,
+                    "Sub1 ID": sub1_id,
+                    "Sub1 Name": custom_sub1_name,
                     "Clicks": clicks,
                     "Conversions": conversions,
                     "Revenue ($)": payout
@@ -208,7 +222,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
     return None, debug_logs
 
 # ==========================================
-# 📊 6. العرض الرئيسي
+# 📊 5. العرض الرئيسي
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 st.caption(f"📅 Selected Range: **{start_date}** to **{end_date}**")
@@ -224,7 +238,7 @@ else:
         all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
-                item["Key"] = f"Account #{idx+1}"
+                item["Account"] = f"Account #{idx+1}"
                 all_data.append(item)
 
 if all_data:
@@ -242,7 +256,7 @@ if all_data:
     st.markdown("---")
     st.subheader("📊 Performance Details")
     st.dataframe(
-        df[["Key", "Offer ID", "Item", "Clicks", "Conversions", "Revenue ($)"]].style.format({"Revenue ($)": "${:,.2f}"}),
+        df[["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]].style.format({"Revenue ($)": "${:,.2f}"}),
         use_container_width=True
     )
 else:
