@@ -1,5 +1,6 @@
 import json
 import os
+import hashlib
 import requests
 import pandas as pd
 from datetime import date, timedelta
@@ -17,11 +18,10 @@ st.set_page_config(
 
 st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
-CONFIG_FILE = "api_keys.json"
-SUB1_NAMES_FILE = "sub1_names.json"
+USERS_FILE = "users.json"
 
 # ==========================================
-# 💾 2. إدارة البيانات والتخزين المحلي
+# 💾 2. دالّات إدارة البيانات والملفات
 # ==========================================
 def load_json(filepath, default):
     if os.path.exists(filepath):
@@ -36,23 +36,97 @@ def save_json(filepath, data):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def get_user_data_file(username):
+    # ملف خاص ببيانات كل مستخدم
+    return f"data_{username}.json"
+
+# ==========================================
+# 🔐 3. نظام تسجيل الدخول وإنشاء الحسابات
+# ==========================================
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+if "username" not in st.session_state:
+    st.session_state["username"] = ""
+
+users_db = load_json(USERS_FILE, {})
+
+if not st.session_state["authenticated"]:
+    st.title("🔐 Authentication Required")
+    
+    tab1, tab2 = st.tabs(["🔑 Login", "📝 Create Account"])
+
+    # --- تسجيل الدخول ---
+    with tab1:
+        st.subheader("Login to your dashboard")
+        login_user = st.text_input("Username", key="login_user").strip().lower()
+        login_pass = st.text_input("Password", type="password", key="login_pass")
+        
+        if st.button("Login", type="primary"):
+            if login_user in users_db and users_db[login_user] == hash_password(login_pass):
+                st.session_state["authenticated"] = True
+                st.session_state["username"] = login_user
+                st.success("Logged in successfully!")
+                st.rerun()
+            else:
+                st.error("Invalid Username or Password!")
+
+    # --- إنشاء حساب جديد ---
+    with tab2:
+        st.subheader("Create a new account")
+        new_user = st.text_input("Choose Username", key="new_user").strip().lower()
+        new_pass = st.text_input("Choose Password", type="password", key="new_pass")
+        confirm_pass = st.text_input("Confirm Password", type="password", key="confirm_pass")
+
+        if st.button("Register"):
+            if not new_user or not new_pass:
+                st.warning("Please fill in all fields.")
+            elif new_user in users_db:
+                st.error("Username already exists! Choose another one.")
+            elif new_pass != confirm_pass:
+                st.error("Passwords do not match!")
+            else:
+                # حفظ الحساب الجديد
+                users_db[new_user] = hash_password(new_pass)
+                save_json(USERS_FILE, users_db)
+
+                # إنشاء ملف البيانات الأولي للمستخدم
+                user_file = get_user_data_file(new_user)
+                save_json(user_file, {"api_keys": [], "sub1_names": {}})
+
+                st.success("Account created successfully! You can now log in.")
+
+    st.stop()  # إيقاف التنفيذ حتى يتم تسجيل الدخول
+
+# ==========================================
+# 📂 4. تحميل بيانات المستخدم الحالي
+# ==========================================
+current_user = st.session_state["username"]
+USER_DATA_FILE = get_user_data_file(current_user)
+
+user_data = load_json(USER_DATA_FILE, {"api_keys": [], "sub1_names": {}})
+
 if "api_keys" not in st.session_state:
-    loaded_keys = load_json(CONFIG_FILE, [])
-    formatted_keys = []
-    for idx, item in enumerate(loaded_keys):
-        if isinstance(item, str):
-            formatted_keys.append({"name": f"Account #{idx+1}", "key": item})
-        else:
-            formatted_keys.append(item)
-    st.session_state["api_keys"] = formatted_keys
+    st.session_state["api_keys"] = user_data.get("api_keys", [])
 
 if "sub1_names" not in st.session_state:
-    st.session_state["sub1_names"] = load_json(SUB1_NAMES_FILE, {})
+    st.session_state["sub1_names"] = user_data.get("sub1_names", {})
 
 # ==========================================
-# ⚙️ 3. Sidebar (الإعدادات والتحكم)
+# ⚙️ 5. Sidebar (الإعدادات والتحكم)
 # ==========================================
-st.sidebar.title("⚙️ Config")
+st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
+
+if st.sidebar.button("🚪 Logout"):
+    st.session_state["authenticated"] = False
+    st.session_state["username"] = ""
+    st.session_state.pop("api_keys", None)
+    st.session_state.pop("sub1_names", None)
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 # --- تحديد التاريخ ---
 st.sidebar.subheader("📅 Date Selection")
@@ -78,68 +152,58 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- إدارة المفاتيح محمية بالكود 123 ---
-st.sidebar.subheader("🔑 Add / Manage API Keys")
-api_pin_code = st.sidebar.text_input("Enter Passcode to Manage Keys:", type="password", key="api_pin_input")
+# --- إدارة المفاتيح الخاصة بالمستخدم ---
+st.sidebar.subheader("🔑 Add API Key")
+acc_name = st.sidebar.text_input("Account Name (e.g. Main Acc):")
+new_key = st.sidebar.text_input("Enter API Key:", type="password")
 
-if api_pin_code == "123":
-    st.sidebar.success("Access Granted!")
-    
-    # إضافة مفتاح جديد
-    acc_name = st.sidebar.text_input("Account Name (e.g. Main Acc):")
-    new_key = st.sidebar.text_input("Enter API Key:", type="password")
+if st.sidebar.button("➕ Add Key"):
+    if new_key.strip():
+        final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
+        st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
+        
+        # حفظ الحالات فملف المستخدم فقط
+        save_json(USER_DATA_FILE, {
+            "api_keys": st.session_state["api_keys"],
+            "sub1_names": st.session_state["sub1_names"]
+        })
+        st.sidebar.success("Key Added!")
+        st.rerun()
 
-    if st.sidebar.button("➕ Add Key"):
-        if new_key.strip():
-            final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
-            st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
-            save_json(CONFIG_FILE, st.session_state["api_keys"])
-            st.sidebar.success("Key Added!")
+if st.session_state["api_keys"]:
+    st.sidebar.subheader("📋 Active Keys")
+    for idx, acc in enumerate(list(st.session_state["api_keys"])):
+        col1, col2 = st.sidebar.columns([3, 1])
+        k = acc.get("key", "")
+        masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
+        col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
+        if col2.button("❌", key=f"del_{idx}"):
+            st.session_state["api_keys"].pop(idx)
+            save_json(USER_DATA_FILE, {
+                "api_keys": st.session_state["api_keys"],
+                "sub1_names": st.session_state["sub1_names"]
+            })
             st.rerun()
 
-    # عرض وحذف المفاتيح النشطة
-    if st.session_state["api_keys"]:
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("📋 Active Keys")
-        for idx, acc in enumerate(list(st.session_state["api_keys"])):
-            col1, col2 = st.sidebar.columns([3, 1])
-            k = acc.get("key", "")
-            masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
-            col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
-            if col2.button("❌", key=f"del_{idx}"):
-                st.session_state["api_keys"].pop(idx)
-                save_json(CONFIG_FILE, st.session_state["api_keys"])
-                st.rerun()
-
-elif api_pin_code != "":
-    st.sidebar.error("Incorrect Passcode!")
-else:
-    # عرض إجمالي عدد الحسابات فقط بدون إمكانية التعديل عند عدم إدخال الكود
-    if st.session_state["api_keys"]:
-        st.sidebar.info(f"🔒 {len(st.session_state['api_keys'])} Active Account(s) Loaded.")
-
-# --- قسم محمي لكود 123 لتخصيص أسماء Sub1 ---
+# --- قسم تخصيص أسماء Sub1 الخاص بالمستخدم ---
 if st.session_state["api_keys"]:
     st.sidebar.markdown("---")
-    with st.sidebar.expander("👤 Sub1 (User) Custom Names", expanded=False):
-        sub1_pin_code = st.text_input("Enter Passcode to Edit:", type="password", key="sub1_pin_input")
-        
-        if sub1_pin_code == "123":
-            st.success("Access Granted!")
-            if st.session_state["sub1_names"]:
-                for sid in sorted(st.session_state["sub1_names"].keys()):
-                    cur_s = st.session_state["sub1_names"].get(sid, "")
-                    new_s = st.text_input(f"Sub1 [{sid}]:", value=cur_s, key=f"s_{sid}")
-                    if new_s != cur_s:
-                        st.session_state["sub1_names"][sid] = new_s
-                        save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
-            else:
-                st.info("No Sub1 IDs fetched yet.")
-        elif sub1_pin_code != "":
-            st.error("Incorrect Passcode!")
+    with st.sidebar.expander("👤 Sub1 Custom Names", expanded=False):
+        if st.session_state["sub1_names"]:
+            for sid in sorted(st.session_state["sub1_names"].keys()):
+                cur_s = st.session_state["sub1_names"].get(sid, "")
+                new_s = st.text_input(f"Sub1 [{sid}]:", value=cur_s, key=f"s_{sid}")
+                if new_s != cur_s:
+                    st.session_state["sub1_names"][sid] = new_s
+                    save_json(USER_DATA_FILE, {
+                        "api_keys": st.session_state["api_keys"],
+                        "sub1_names": st.session_state["sub1_names"]
+                    })
+        else:
+            st.info("No Sub1 IDs fetched yet.")
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات (Offer + Sub1)
+# 🌐 6. دالة جلب البيانات (Everflow API)
 # ==========================================
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
@@ -205,7 +269,10 @@ def fetch_everflow_data(api_key, s_date, e_date):
 
                 if sub1_id and sub1_id not in st.session_state["sub1_names"]:
                     st.session_state["sub1_names"][sub1_id] = sub1_id
-                    save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
+                    save_json(USER_DATA_FILE, {
+                        "api_keys": st.session_state["api_keys"],
+                        "sub1_names": st.session_state["sub1_names"]
+                    })
 
                 custom_sub1_name = st.session_state["sub1_names"].get(sub1_id, sub1_id)
 
@@ -232,16 +299,16 @@ def fetch_everflow_data(api_key, s_date, e_date):
     return None, debug_logs
 
 # ==========================================
-# 📊 5. العرض الرئيسي (مع التجميع التلقائي)
+# 📊 7. العرض الرئيسي
 # ==========================================
 st.title("💵 Live Revenue Tracker")
-st.caption(f"📅 Selected Range: **{start_date}** to **{end_date}**")
+st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
 
 all_data = []
 all_debug_info = []
 
 if not st.session_state["api_keys"]:
-    st.info("👈 أضف الـ **API Key** واسم الحساب في القائمة الجانبية (Sidebar) للبدء.")
+    st.info("👈 أضف الـ **API Key** واسم الحساب فـ Sidebar باش تبدأ.")
 else:
     for idx, acc in enumerate(st.session_state["api_keys"]):
         res, logs = fetch_everflow_data(acc.get("key", ""), start_date, end_date)
