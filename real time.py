@@ -36,8 +36,17 @@ def save_json(filepath, data):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
+# تهيئة المفاتيح كقائمة من الكائنات (Dicts)
 if "api_keys" not in st.session_state:
-    st.session_state["api_keys"] = load_json(CONFIG_FILE, [])
+    loaded_keys = load_json(CONFIG_FILE, [])
+    # تحويل البيانات القديمة إذا كانت مجرد نص بسيط
+    formatted_keys = []
+    for idx, item in enumerate(loaded_keys):
+        if isinstance(item, str):
+            formatted_keys.append({"name": f"Account #{idx+1}", "key": item})
+        else:
+            formatted_keys.append(item)
+    st.session_state["api_keys"] = formatted_keys
 
 if "sub1_names" not in st.session_state:
     st.session_state["sub1_names"] = load_json(SUB1_NAMES_FILE, {})
@@ -71,23 +80,26 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- إدارة المفاتيح ---
+# --- إدارة المفاتيح مع أسماء الحسابات ---
 st.sidebar.subheader("🔑 Add API Key")
+acc_name = st.sidebar.text_input("Account Name (e.g. Main Acc):")
 new_key = st.sidebar.text_input("Enter API Key:", type="password")
+
 if st.sidebar.button("➕ Add Key"):
     if new_key.strip():
-        if new_key.strip() not in st.session_state["api_keys"]:
-            st.session_state["api_keys"].append(new_key.strip())
-            save_json(CONFIG_FILE, st.session_state["api_keys"])
-            st.sidebar.success("Key Added!")
-            st.rerun()
+        final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
+        st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
+        save_json(CONFIG_FILE, st.session_state["api_keys"])
+        st.sidebar.success("Key Added!")
+        st.rerun()
 
 if st.session_state["api_keys"]:
     st.sidebar.subheader("📋 Active Keys")
-    for idx, k in enumerate(list(st.session_state["api_keys"])):
+    for idx, acc in enumerate(list(st.session_state["api_keys"])):
         col1, col2 = st.sidebar.columns([3, 1])
+        k = acc.get("key", "")
         masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
-        col1.write(f"Key {idx+1}: `{masked_key}`")
+        col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
         if col2.button("❌", key=f"del_{idx}"):
             st.session_state["api_keys"].pop(idx)
             save_json(CONFIG_FILE, st.session_state["api_keys"])
@@ -210,14 +222,14 @@ all_data = []
 all_debug_info = []
 
 if not st.session_state["api_keys"]:
-    st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
+    st.info("👈 أضف الـ **API Key** واسم الحساب في القائمة الجانبية (Sidebar) للبدء.")
 else:
-    for idx, key in enumerate(st.session_state["api_keys"]):
-        res, logs = fetch_everflow_data(key, start_date, end_date)
-        all_debug_info.append({"key_index": idx + 1, "logs": logs})
+    for idx, acc in enumerate(st.session_state["api_keys"]):
+        res, logs = fetch_everflow_data(acc.get("key", ""), start_date, end_date)
+        all_debug_info.append({"account_name": acc.get("name"), "logs": logs})
         if res:
             for item in res:
-                item["Account"] = f"Account #{idx+1}"
+                item["Account"] = acc.get("name", f"Account #{idx+1}")
                 all_data.append(item)
 
 if all_data:
@@ -243,15 +255,12 @@ if all_data:
     )
 
     if selected_columns:
-        # الأعمدة القابلة للتجميع (Group Keys)
         group_keys = [col for col in selected_columns if col in ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name"]]
-        # الأعمدة الرقمية الحسابية
         num_metrics = [col for col in selected_columns if col in ["Clicks", "Conversions", "Revenue ($)"]]
 
         if group_keys and num_metrics:
-            # تجميع البيانات وحساب المجموع تلقائياً لكل ID متكرر
             display_df = df.groupby(group_keys, as_index=False)[num_metrics].sum()
-            display_df = display_df[selected_columns]  # الحفاظ على ترتيب الأعمدة المحنونة
+            display_df = display_df[selected_columns]
         else:
             display_df = df[selected_columns]
 
