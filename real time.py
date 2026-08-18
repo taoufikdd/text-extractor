@@ -39,7 +39,7 @@ if "api_keys" not in st.session_state:
     st.session_state["api_keys"] = load_keys()
 
 # ==========================================
-# ⚙️ 3. القائمة الجانبية (Sidebar)
+# ⚙️ 3. Sidebar
 # ==========================================
 st.sidebar.title("⚙️ Config")
 
@@ -73,40 +73,70 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات الذكية (Everflow API Gateway)
+# 🌐 4. دالة جلب البيانات الفعالة
 # ==========================================
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
-    base_url = "https://api.eflow.team"
-    
+    from_str = s_date.strftime("%Y-%m-%d")
+    to_str = e_date.strftime("%Y-%m-%d")
+
     headers = {
         "x-eflow-api-key": clean_key,
         "Content-Type": "application/json"
     }
 
-    payload = {
-        "from": s_date.strftime("%Y-%m-%d"),
-        "to": e_date.strftime("%Y-%m-%d"),
-        "timezone_id": 54,
-        "currency_id": "USD"
-    }
-
-    # اختبار تجريبي لمعرفة نوع المفتاح (Affiliate أم Network)
-    endpoints = [
-        {"type": "affiliate_offers", "url": f"{base_url}/v1/affiliates/reporting/offers", "method": "POST"},
-        {"type": "affiliate_summary", "url": f"{base_url}/v1/affiliates/reporting/summary", "method": "POST"},
-        {"type": "network_offers", "url": f"{base_url}/v1/networks/reporting/offers", "method": "POST", "payload": {**payload, "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}}}
+    # اختبار عدة أنماط شائعة في Everflow API (GET & POST)
+    attempts = [
+        # GET Requests (المصممة لـ Affiliate APIs)
+        {
+            "method": "GET",
+            "url": f"https://api.eflow.team/v1/affiliate/reporting/offers?from={from_str}&to={to_str}",
+            "payload": None
+        },
+        {
+            "method": "GET",
+            "url": f"https://api.eflow.team/v1/affiliate/reporting/summary?from={from_str}&to={to_str}",
+            "payload": None
+        },
+        # POST Requests
+        {
+            "method": "POST",
+            "url": "https://api.eflow.team/v1/affiliate/reporting/offers",
+            "payload": {
+                "from": from_str,
+                "to": to_str,
+                "timezone_id": 54,
+                "currency_id": "USD"
+            }
+        },
+        {
+            "method": "POST",
+            "url": "https://api.eflow.team/v1/networks/reporting/offers/summary",
+            "payload": {
+                "from": from_str,
+                "to": to_str,
+                "timezone_id": 54,
+                "currency_id": "USD",
+                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
+            }
+        }
     ]
 
     debug_logs = []
 
-    for ep in endpoints:
-        url = ep["url"]
-        req_payload = ep.get("payload", payload)
+    for req in attempts:
+        url = req["url"]
+        method = req["method"]
+        payload = req["payload"]
+
         try:
-            res = requests.post(url, headers=headers, json=req_payload, timeout=10)
-            
+            if method == "GET":
+                res = requests.get(url, headers=headers, timeout=10)
+            else:
+                res = requests.post(url, headers=headers, json=payload, timeout=10)
+
             debug_logs.append({
+                "method": method,
                 "url": url,
                 "status_code": res.status_code,
                 "response_text": res.text[:300]
@@ -116,7 +146,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 data = res.json()
                 results = []
 
-                # معالجة جدول العروض
+                # معالجة استجابة الجدول
                 if "table" in data:
                     for row in data.get("table", []):
                         cols = row.get("columns", [])
@@ -133,15 +163,15 @@ def fetch_everflow_data(api_key, s_date, e_date):
                             "Conversions": conversions,
                             "Revenue ($)": revenue
                         })
-                # معالجة الملخص العام
-                elif "reporting" in data:
-                    rep = data.get("reporting", {})
+                # معالجة استجابة الملخص Direct Summary
+                elif "reporting" in data or "payout" in str(data):
+                    rep = data.get("reporting", data)
                     revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
                     conversions = int(rep.get("conversions", 0))
                     clicks = int(rep.get("clicks", 0))
-                    
+
                     results.append({
-                        "Item": "General Summary",
+                        "Item": "Overall Summary",
                         "Clicks": clicks,
                         "Conversions": conversions,
                         "Revenue ($)": revenue
