@@ -88,14 +88,12 @@ st.sidebar.subheader("🔌 Sponsor API Setup")
 with st.sidebar.expander("➕ Add Sponsor API"):
     s_name = st.text_input("Sponsor Name:")
     s_api_key = st.text_input("API Key:", type="password")
-    s_domain = st.text_input("Domain (Default: api.eflow.team):", value="api.eflow.team")
     
     if st.button("Add Sponsor"):
         if s_name and s_api_key:
             st.session_state["sponsors"].append({
                 "name": s_name.strip(),
-                "api_key": s_api_key.strip(),
-                "domain": s_domain.strip()
+                "api_key": s_api_key.strip()
             })
             save_config()
             st.success("Sponsor Added!")
@@ -116,18 +114,14 @@ if st.session_state["sponsors"]:
 # ==========================================
 def fetch_revenue(sponsor, s_date, e_date):
     api_key = sponsor.get("api_key", "").strip()
-    domain = sponsor.get("domain", "api.eflow.team").strip()
-    
-    domain = domain.replace("https://", "").replace("http://", "").split("/")[0]
-    if "everflow.io" in domain:
-        domain = domain.replace("everflow.io", "eflow.team")
+    domain = "api.eflow.team"
 
     headers = {
         "x-eflow-api-key": api_key,
         "Content-Type": "application/json"
     }
 
-    # تجريب مسار الـ Summary ومسار الـ Sub1
+    # المسارات الأساسية في Everflow
     endpoints = [
         f"https://{domain}/v1/networks/reporting/sub1",
         f"https://{domain}/v1/affiliates/reporting/sub1",
@@ -162,7 +156,6 @@ def fetch_revenue(sponsor, s_date, e_date):
                     if cols:
                         sub1_id = str(cols[0].get("id", cols[0].get("label", "N/A"))).strip()
                     
-                    # قراءة الأرباح سواء من payout أو revenue
                     payout = float(rep.get("payout", rep.get("revenue", 0.0)))
                     conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
                     
@@ -201,7 +194,6 @@ if st.session_state["sponsors"]:
 if records:
     df = pd.DataFrame(records)
     
-    # 1. البطاقة الرئيسية لمجموع الأرباح
     total_rev = df["Revenue ($)"].sum()
     total_conv = df["Conversions"].sum()
     
@@ -211,7 +203,6 @@ if records:
 
     st.markdown("---")
 
-    # 2. جدول الأرباح صافي حسب الأشخاص
     st.subheader("👤 Revenue by Person")
     person_df = df.groupby("Person")[["Conversions", "Revenue ($)"]].sum().reset_index()
     person_df = person_df.sort_values(by="Revenue ($)", ascending=False)
@@ -221,7 +212,6 @@ if records:
         use_container_width=True
     )
 
-    # 3. التفاصيل الكاملة
     st.subheader("📋 Breakdown Detail")
     st.dataframe(
         df.style.format({"Revenue ($)": "${:,.2f}"}),
