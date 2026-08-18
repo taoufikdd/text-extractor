@@ -201,7 +201,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
     return None, debug_logs
 
 # ==========================================
-# 📊 5. العرض الرئيسي
+# 📊 5. العرض الرئيسي (مع التجميع التلقائي)
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 st.caption(f"📅 Selected Range: **{start_date}** to **{end_date}**")
@@ -235,7 +235,6 @@ if all_data:
     st.markdown("---")
     st.subheader("📊 Performance Details")
 
-    # --- التحكم في الأعمدة المعروضة ---
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
     selected_columns = st.multiselect(
         "👁️ Select Columns to Display:",
@@ -244,9 +243,21 @@ if all_data:
     )
 
     if selected_columns:
+        # الأعمدة القابلة للتجميع (Group Keys)
+        group_keys = [col for col in selected_columns if col in ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name"]]
+        # الأعمدة الرقمية الحسابية
+        num_metrics = [col for col in selected_columns if col in ["Clicks", "Conversions", "Revenue ($)"]]
+
+        if group_keys and num_metrics:
+            # تجميع البيانات وحساب المجموع تلقائياً لكل ID متكرر
+            display_df = df.groupby(group_keys, as_index=False)[num_metrics].sum()
+            display_df = display_df[selected_columns]  # الحفاظ على ترتيب الأعمدة المحنونة
+        else:
+            display_df = df[selected_columns]
+
         format_dict = {"Revenue ($)": "${:,.2f}"} if "Revenue ($)" in selected_columns else {}
         st.dataframe(
-            df[selected_columns].style.format(format_dict),
+            display_df.style.format(format_dict),
             use_container_width=True
         )
     else:
