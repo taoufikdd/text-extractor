@@ -36,7 +36,6 @@ def save_json(filepath, data):
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-# تهيئة المفاتيح كقائمة من الكائنات (Dicts)
 if "api_keys" not in st.session_state:
     loaded_keys = load_json(CONFIG_FILE, [])
     formatted_keys = []
@@ -79,38 +78,53 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- إدارة المفاتيح مع أسماء الحسابات ---
-st.sidebar.subheader("🔑 Add API Key")
-acc_name = st.sidebar.text_input("Account Name (e.g. Main Acc):")
-new_key = st.sidebar.text_input("Enter API Key:", type="password")
+# --- إدارة المفاتيح محمية بالكود 123 ---
+st.sidebar.subheader("🔑 Add / Manage API Keys")
+api_pin_code = st.sidebar.text_input("Enter Passcode to Manage Keys:", type="password", key="api_pin_input")
 
-if st.sidebar.button("➕ Add Key"):
-    if new_key.strip():
-        final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
-        st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
-        save_json(CONFIG_FILE, st.session_state["api_keys"])
-        st.sidebar.success("Key Added!")
-        st.rerun()
+if api_pin_code == "123":
+    st.sidebar.success("Access Granted!")
+    
+    # إضافة مفتاح جديد
+    acc_name = st.sidebar.text_input("Account Name (e.g. Main Acc):")
+    new_key = st.sidebar.text_input("Enter API Key:", type="password")
 
-if st.session_state["api_keys"]:
-    st.sidebar.subheader("📋 Active Keys")
-    for idx, acc in enumerate(list(st.session_state["api_keys"])):
-        col1, col2 = st.sidebar.columns([3, 1])
-        k = acc.get("key", "")
-        masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
-        col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
-        if col2.button("❌", key=f"del_{idx}"):
-            st.session_state["api_keys"].pop(idx)
+    if st.sidebar.button("➕ Add Key"):
+        if new_key.strip():
+            final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
+            st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
             save_json(CONFIG_FILE, st.session_state["api_keys"])
+            st.sidebar.success("Key Added!")
             st.rerun()
+
+    # عرض وحذف المفاتيح النشطة
+    if st.session_state["api_keys"]:
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("📋 Active Keys")
+        for idx, acc in enumerate(list(st.session_state["api_keys"])):
+            col1, col2 = st.sidebar.columns([3, 1])
+            k = acc.get("key", "")
+            masked_key = k[:4] + "..." + k[-4:] if len(k) > 8 else "API Key"
+            col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
+            if col2.button("❌", key=f"del_{idx}"):
+                st.session_state["api_keys"].pop(idx)
+                save_json(CONFIG_FILE, st.session_state["api_keys"])
+                st.rerun()
+
+elif api_pin_code != "":
+    st.sidebar.error("Incorrect Passcode!")
+else:
+    # عرض إجمالي عدد الحسابات فقط بدون إمكانية التعديل عند عدم إدخال الكود
+    if st.session_state["api_keys"]:
+        st.sidebar.info(f"🔒 {len(st.session_state['api_keys'])} Active Account(s) Loaded.")
 
 # --- قسم محمي لكود 123 لتخصيص أسماء Sub1 ---
 if st.session_state["api_keys"]:
     st.sidebar.markdown("---")
     with st.sidebar.expander("👤 Sub1 (User) Custom Names", expanded=False):
-        pin_code = st.text_input("Enter Passcode to Edit:", type="password", key="sub1_pin_input")
+        sub1_pin_code = st.text_input("Enter Passcode to Edit:", type="password", key="sub1_pin_input")
         
-        if pin_code == "123":
+        if sub1_pin_code == "123":
             st.success("Access Granted!")
             if st.session_state["sub1_names"]:
                 for sid in sorted(st.session_state["sub1_names"].keys()):
@@ -121,7 +135,7 @@ if st.session_state["api_keys"]:
                         save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
             else:
                 st.info("No Sub1 IDs fetched yet.")
-        elif pin_code != "":
+        elif sub1_pin_code != "":
             st.error("Incorrect Passcode!")
 
 # ==========================================
