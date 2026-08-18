@@ -228,16 +228,9 @@ else:
 
 st.sidebar.markdown("---")
 
-# --- فلترة المجموعات من Sidebar مباشرة ---
-st.sidebar.subheader("📂 Active Group Filter")
-group_options = ["All Accounts"] + list(st.session_state["account_groups"].keys())
-selected_active_group = st.sidebar.selectbox("Show Revenue For:", options=group_options, key="active_group_select")
-
-st.sidebar.markdown("---")
-
 # --- إدارة المفاتيح والمجموعات محمية بالكود 123 ---
-st.sidebar.subheader("🔑 Manage Keys & Groups")
-api_pin_code = st.sidebar.text_input("Enter Passcode to Edit:", type="password", key="api_pin_input")
+st.sidebar.subheader("🔑 Add / Manage API Keys & Groups")
+api_pin_code = st.sidebar.text_input("Enter Passcode to Manage Keys:", type="password", key="api_pin_input")
 
 if api_pin_code == "123":
     st.sidebar.success("Access Granted!")
@@ -300,6 +293,7 @@ if api_pin_code == "123":
             col1.write(f"**{acc.get('name', 'Account')}**\n`{masked_key}`")
             if col2.button("❌", key=f"del_{idx}"):
                 removed_acc = st.session_state["api_keys"].pop(idx)
+                # Remove from groups if exists
                 for g_name, g_accs in st.session_state["account_groups"].items():
                     if removed_acc.get("name") in g_accs:
                         g_accs.remove(removed_acc.get("name"))
@@ -442,24 +436,15 @@ def fetch_everflow_data(api_key, s_date, e_date):
 # 📊 7. العرض الرئيسي
 # ==========================================
 st.title("💵 Live Revenue Tracker")
-st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}** | 📂 Selected Group: **{selected_active_group}**")
+st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
 
 all_data = []
 all_debug_info = []
 
-# تحديد الحسابات التي يجب جلب بياناتها بناءً على المجموعة المختارة
-if selected_active_group != "All Accounts":
-    target_account_names = st.session_state["account_groups"].get(selected_active_group, [])
-    keys_to_fetch = [acc for acc in st.session_state["api_keys"] if acc.get("name") in target_account_names]
-else:
-    keys_to_fetch = st.session_state["api_keys"]
-
 if not st.session_state["api_keys"]:
     st.info("👈 أدخل Passcode `123` في القائمة الجانبية لإضافة API Keys والحسابات.")
-elif not keys_to_fetch:
-    st.warning(f"المجموعة '{selected_active_group}' لا تحتوي على أي حسابات حالياً.")
 else:
-    for idx, acc in enumerate(keys_to_fetch):
+    for idx, acc in enumerate(st.session_state["api_keys"]):
         res, logs = fetch_everflow_data(acc.get("key", ""), start_date, end_date)
         all_debug_info.append({"account_name": acc.get("name"), "logs": logs})
         if res:
@@ -468,15 +453,26 @@ else:
                 all_data.append(item)
 
 if all_data:
-    filtered_df = pd.DataFrame(all_data)
+    df = pd.DataFrame(all_data)
 
     # ==========================================
-    # 🔍 خيارات الفلترة الإضافية
+    # 🔍 خيارات الفلترة والمجموعات (Filter Options & Group Selector)
     # ==========================================
     st.markdown("---")
-    st.subheader("🔍 Filter Data")
+    st.subheader("🔍 Filter Data & Select Group")
     
-    f_col1, f_col2 = st.columns(2)
+    group_col, f_col1, f_col2 = st.columns([3, 3, 3])
+    
+    # اختيار المجموعة
+    with group_col:
+        group_options = ["All Accounts"] + list(st.session_state["account_groups"].keys())
+        selected_group = st.selectbox("📂 Select Group:", options=group_options)
+
+    # تطبيق فلتر المجموعة أولاً
+    filtered_df = df.copy()
+    if selected_group != "All Accounts":
+        allowed_accounts = st.session_state["account_groups"].get(selected_group, [])
+        filtered_df = filtered_df[filtered_df["Account"].isin(allowed_accounts)]
     
     with f_col1:
         filter_type = st.selectbox(
@@ -503,7 +499,7 @@ if all_data:
             if selected_sub1_names:
                 filtered_df = filtered_df[filtered_df["Sub1 Name"].isin(selected_sub1_names)]
 
-    # حساب المجاميع الخاصة بالمجموعة المحددة فقط
+    # حساب المجاميع بناءً على البيانات المفلترة فقط
     total_rev = filtered_df["Revenue ($)"].sum() if not filtered_df.empty else 0.0
     total_conv = filtered_df["Conversions"].sum() if not filtered_df.empty else 0
     total_clicks = filtered_df["Clicks"].sum() if not filtered_df.empty else 0
@@ -516,6 +512,7 @@ if all_data:
 
     st.markdown("---")
     
+    # زر Refresh Data
     perf_col1, perf_col2 = st.columns([8, 2])
     with perf_col1:
         st.subheader("📊 Performance Details")
@@ -547,11 +544,11 @@ if all_data:
                 use_container_width=True
             )
         else:
-            st.info("لا توجد بيانات للفلاتر المحددة.")
+            st.info("لا توجد بيانات للمجموعة أو الفلتر المحدد.")
     else:
         st.warning("اختر عموداً واحداً على الأقل للعرض.")
 else:
-    if st.session_state["api_keys"] and keys_to_fetch:
-        st.warning("لم يتم العثور على أرباح لهذه المجموعة في الفترة المحددة.")
+    if st.session_state["api_keys"]:
+        st.warning("لم يتم العثور على أرباح للفترة المحددة. تفقد قسم التشخيص:")
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
