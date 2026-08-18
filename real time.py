@@ -31,7 +31,7 @@ def check_login():
     if st.session_state["authenticated"]:
         return True
 
-    # كلمات السر الافتراضية (يمكن تغييرها أو ربطها بـ Streamlit Secrets)
+    # كلمات السر الافتراضية (يمكن تغييرها عبر Streamlit Secrets)
     ADMIN_PASS = st.secrets.get("ADMIN_PASSWORD", "admin12345")
     USER_PASS = st.secrets.get("USER_PASSWORD", "user12345")
 
@@ -149,7 +149,7 @@ if user_role == "admin":
         s_api_key = st.text_input("API Key / Token:", type="password")
         s_endpoint = st.text_input(
             "API Endpoint URL:", 
-            placeholder="https://api.everflow.io/v1/affiliates/reporting/sub1"
+            placeholder="https://api.eflow.team/v1/affiliates/reporting/sub1"
         )
         
         if st.button("Add Sponsor"):
@@ -182,12 +182,17 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
     endpoint = sponsor["endpoint"].strip()
     api_key = sponsor["api_key"].strip()
     
-    # دعم معالجة Everflow API
-    if "everflow" in endpoint.lower():
+    # تصحيح الدومين تلقائياً إذا أدخل المستخدم الدومين القديم
+    if "api.everflow.io" in endpoint:
+        endpoint = endpoint.replace("api.everflow.io", "api.eflow.team")
+    
+    # معالجة طلبات Everflow API
+    if "eflow" in endpoint.lower() or "everflow" in endpoint.lower():
         headers = {
             "x-eflow-api-key": api_key,
             "Content-Type": "application/json"
         }
+        # إرسال query تتضمن group_by لجلب المعطيات بـ sub1
         payload = {
             "from": s_date.strftime("%Y-%m-%d"),
             "to": e_date.strftime("%Y-%m-%d"),
@@ -195,6 +200,7 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
             "currency_id": "USD",
             "query": {
                 "day_breakdown": False,
+                "group_by": ["sub1"],
                 "filters": []
             }
         }
@@ -204,13 +210,15 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
                 res_json = response.json()
                 table_data = res_json.get("table", [])
                 parsed_items = []
+                
                 for row in table_data:
                     columns = row.get("columns", [])
                     reporting = row.get("reporting", {})
                     
                     sub1_val = "N/A"
                     if columns:
-                        sub1_val = str(columns[0].get("label", "N/A")).strip()
+                        col_item = columns[0]
+                        sub1_val = str(col_item.get("id", col_item.get("label", "N/A"))).strip()
                         
                     parsed_items.append({
                         "sub1": sub1_val,
