@@ -39,7 +39,6 @@ def save_json(filepath, data):
 # تهيئة المفاتيح كقائمة من الكائنات (Dicts)
 if "api_keys" not in st.session_state:
     loaded_keys = load_json(CONFIG_FILE, [])
-    # تحويل البيانات القديمة إذا كانت مجرد نص بسيط
     formatted_keys = []
     for idx, item in enumerate(loaded_keys):
         if isinstance(item, str):
@@ -105,19 +104,25 @@ if st.session_state["api_keys"]:
             save_json(CONFIG_FILE, st.session_state["api_keys"])
             st.rerun()
 
-# --- قسم مخفي لتخصيص أسماء Sub1 ---
+# --- قسم محمي لكود 123 لتخصيص أسماء Sub1 ---
 if st.session_state["api_keys"]:
     st.sidebar.markdown("---")
     with st.sidebar.expander("👤 Sub1 (User) Custom Names", expanded=False):
-        if st.session_state["sub1_names"]:
-            for sid in sorted(st.session_state["sub1_names"].keys()):
-                cur_s = st.session_state["sub1_names"].get(sid, "")
-                new_s = st.text_input(f"Sub1 [{sid}]:", value=cur_s, key=f"s_{sid}")
-                if new_s != cur_s:
-                    st.session_state["sub1_names"][sid] = new_s
-                    save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
-        else:
-            st.info("No Sub1 IDs fetched yet.")
+        pin_code = st.text_input("Enter Passcode to Edit:", type="password", key="sub1_pin_input")
+        
+        if pin_code == "123":
+            st.success("Access Granted!")
+            if st.session_state["sub1_names"]:
+                for sid in sorted(st.session_state["sub1_names"].keys()):
+                    cur_s = st.session_state["sub1_names"].get(sid, "")
+                    new_s = st.text_input(f"Sub1 [{sid}]:", value=cur_s, key=f"s_{sid}")
+                    if new_s != cur_s:
+                        st.session_state["sub1_names"][sid] = new_s
+                        save_json(SUB1_NAMES_FILE, st.session_state["sub1_names"])
+            else:
+                st.info("No Sub1 IDs fetched yet.")
+        elif pin_code != "":
+            st.error("Incorrect Passcode!")
 
 # ==========================================
 # 🌐 4. دالة جلب البيانات (Offer + Sub1)
