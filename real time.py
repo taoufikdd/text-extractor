@@ -221,9 +221,9 @@ else:
         st.sidebar.info(f"🔒 {len(st.session_state['api_keys'])} Active Account(s) Loaded.")
 
 # ==========================================
-# 🌐 6. دالة جلب البيانات (Payload مخفف + Auto Retry)
+# 🌐 6. دالة جلب البيانات (إصلاح timezone_id)
 # ==========================================
-@st.cache_data(ttl=600, show_spinner="Fetching data from Everflow...")
+@st.cache_data(ttl=300, show_spinner="Fetching data from Everflow...")
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
     from_str = s_date.strftime("%Y-%m-%d")
@@ -236,10 +236,11 @@ def fetch_everflow_data(api_key, s_date, e_date):
 
     url = "https://api.eflow.team/v1/affiliates/reporting/entity/table"
 
-    # Payload مخفف لأقصى درجة لتفادي BigQuery Quota Limit
+    # إضافة timezone_id المقبولة من Everflow
     payload = {
         "from": from_str,
         "to": to_str,
+        "timezone_id": 88,  # UTC Timezone ID
         "columns": [
             {"column": "offer"},
             {"column": "sub1"}
