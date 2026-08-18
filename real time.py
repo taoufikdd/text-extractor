@@ -73,77 +73,81 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات عبر Affiliate GET Endpoints
+# 🌐 4. دالة جلب البيانات باستخدام Custom Domain
 # ==========================================
-def fetch_everflow_affiliate(api_key, s_date, e_date):
+def fetch_everflow_exact(api_key, s_date, e_date):
     clean_key = api_key.strip()
-    from_str = s_date.strftime("%Y-%m-%d")
-    to_str = e_date.strftime("%Y-%m-%d")
 
-    headers = {
-        "x-eflow-api-key": clean_key,
-        "Content-Type": "application/json"
+    # جلب البيانات عبر النطاق الخاص بشركتك وتجربة النطاق العام للسلامة
+    domains = [
+        "https://m-m.everflowclient.io",
+        "https://api.eflow.team"
+    ]
+
+    payload = {
+        "from": s_date.strftime("%Y-%m-%d"),
+        "to": e_date.strftime("%Y-%m-%d"),
+        "timezone_id": 54, # Europe/Amsterdam كما موضح في حسابك
+        "currency_id": "USD",
+        "query": {
+            "day_breakdown": False,
+            "group_by": ["offer"],
+            "filters": []
+        }
     }
 
-    # مسارات GET الخاصة بحسابات Partner/Affiliate فـ Everflow
-    get_endpoints = [
-        f"https://api.eflow.team/v1/affiliate/reporting/offers?from={from_str}&to={to_str}&timezone_id=54",
-        f"https://api.eflow.team/v1/affiliate/reporting/sub1?from={from_str}&to={to_str}&timezone_id=54",
-        f"https://api.eflow.team/v1/affiliate/reporting/summary?from={from_str}&to={to_str}&timezone_id=54"
+    headers_list = [
+        {"x-eflow-api-key": clean_key, "Content-Type": "application/json"},
+        {"x-key": clean_key, "Content-Type": "application/json"}
+    ]
+
+    endpoints_path = [
+        "/v1/networks/reporting/offers",
+        "/v1/networks/reporting/sub1",
+        "/v1/networks/reporting/custom"
     ]
 
     debug_logs = []
 
-    for url in get_endpoints:
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            
-            debug_logs.append({
-                "url": url,
-                "status_code": res.status_code,
-                "response_text": res.text[:300]
-            })
-
-            if res.status_code == 200:
-                data = res.json()
-                results = []
-
-                # في حالة العثور على جدول البيانات (Table)
-                if "table" in data:
-                    table = data.get("table", [])
-                    for row in table:
-                        cols = row.get("columns", [])
-                        rep = row.get("reporting", {})
-                        label = cols[0].get("label", cols[0].get("id", "Offer")) if cols else "Offer"
-                        
-                        revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                        conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                        clicks = int(rep.get("clicks", 0))
-
-                        results.append({
-                            "Item": str(label),
-                            "Clicks": clicks,
-                            "Conversions": conversions,
-                            "Revenue ($)": revenue
-                        })
-                # في حالة إرجاع Summary مباشر
-                elif "reporting" in data:
-                    rep = data.get("reporting", {})
-                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                    conversions = int(rep.get("conversions", 0))
-                    clicks = int(rep.get("clicks", 0))
-                    results.append({
-                        "Item": "Overall Summary",
-                        "Clicks": clicks,
-                        "Conversions": conversions,
-                        "Revenue ($)": revenue
+    for domain in domains:
+        for headers in headers_list:
+            for path in endpoints_path:
+                url = f"{domain}{path}"
+                try:
+                    res = requests.post(url, headers=headers, json=payload, timeout=10)
+                    
+                    debug_logs.append({
+                        "url": url,
+                        "status_code": res.status_code,
+                        "response_text": res.text[:300]
                     })
 
-                if results:
-                    return results, debug_logs
+                    if res.status_code == 200:
+                        data = res.json()
+                        table = data.get("table", [])
+                        results = []
+                        for row in table:
+                            cols = row.get("columns", [])
+                            rep = row.get("reporting", {})
+                            
+                            label = "Offer / Item"
+                            if cols:
+                                label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
+                            
+                            revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                            conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
+                            clicks = int(rep.get("clicks", 0))
 
-        except Exception as e:
-            debug_logs.append({"url": url, "error": str(e)})
+                            results.append({
+                                "Item": label,
+                                "Clicks": clicks,
+                                "Conversions": conversions,
+                                "Revenue ($)": revenue
+                            })
+                        if results:
+                            return results, debug_logs
+                except Exception as e:
+                    debug_logs.append({"url": url, "error": str(e)})
 
     return None, debug_logs
 
@@ -159,7 +163,7 @@ if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res, logs = fetch_everflow_affiliate(key, start_date, end_date)
+        res, logs = fetch_everflow_exact(key, start_date, end_date)
         all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
