@@ -18,6 +18,63 @@ st.set_page_config(
 
 st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
+# ==========================================
+# 🎨 فرض الخلفية البيضاء (White Theme)
+# ==========================================
+st.markdown("""
+    <style>
+        .stApp, [data-testid="stMainBlockContainer"] {
+            background-color: #ffffff !important;
+            color: #1c1e21 !important;
+        }
+        [data-testid="stSidebar"] {
+            background-color: #f8f9fa !important;
+            border-right: 1px solid #e9ecef;
+        }
+        h1, h2, h3, h4, h5, h6, p, label, .stCaption {
+            color: #1c1e21 !important;
+        }
+        div[data-baseweb="input"], 
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="select"] > div,
+        input {
+            background-color: #ffffff !important;
+            color: #1c1e21 !important;
+            border-color: #ced4da !important;
+        }
+        div[data-baseweb="input"]:focus-within {
+            border-color: #0d6efd !important;
+        }
+        .stButton > button {
+            background-color: #ffffff !important;
+            color: #1c1e21 !important;
+            border: 1px solid #ced4da !important;
+            box-shadow: none !important;
+        }
+        .stButton > button:hover {
+            background-color: #f8f9fa !important;
+            border-color: #adb5bd !important;
+            color: #000000 !important;
+        }
+        span[data-baseweb="tag"] {
+            background-color: #e9ecef !important;
+            color: #1c1e21 !important;
+        }
+        [data-testid="stDataFrame"], 
+        [data-testid="stDataFrame"] > div, 
+        [data-testid="stDataFrame"] canvas,
+        [data-testid="stDataFrame"] iframe {
+            background-color: #ffffff !important;
+        }
+        [data-testid="stDataFrame"] * {
+            color: #1c1e21 !important;
+        }
+        [data-testid="stMetricValue"] {
+            color: #0d6efd !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
 USERS_FILE = "users.json"
 
 # ==========================================
@@ -355,14 +412,12 @@ def fetch_everflow_data(api_key, s_date, e_date):
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 
-# تحديد اسم المجموعات المعروضة في الترويسة
 group_disp = ", ".join(selected_active_groups) if selected_active_groups else "All Accounts"
 st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}** | 📂 Groups: **{group_disp}**")
 
 all_data = []
 all_debug_info = []
 
-# تجميع الحسابات بدون تكرار (Unique Accounts Set)
 if selected_active_groups:
     target_account_names = set()
     for g_name in selected_active_groups:
@@ -422,7 +477,6 @@ if all_data:
             if selected_sub1_names:
                 filtered_df = filtered_df[filtered_df["Sub1 Name"].isin(selected_sub1_names)]
 
-    # حساب المجاميع الخاصة بالمجموعات المحددة فقط بدون تكرار
     total_rev = filtered_df["Revenue ($)"].sum() if not filtered_df.empty else 0.0
     total_conv = filtered_df["Conversions"].sum() if not filtered_df.empty else 0
     total_clicks = filtered_df["Clicks"].sum() if not filtered_df.empty else 0
