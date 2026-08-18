@@ -193,6 +193,7 @@ if "sub1_names" not in st.session_state:
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 
 if st.sidebar.button("🔄 Refresh Data", use_container_width=True, key="sb_refresh"):
+    st.cache_data.clear()  # تفريغ الـ Cache يدوياً لتحديث البيانات
     st.rerun()
 
 if st.session_state["theme"] == "dark":
@@ -305,8 +306,9 @@ if st.session_state["api_keys"]:
             st.error("Incorrect Passcode!")
 
 # ==========================================
-# 🌐 6. دالة جلب البيانات (Everflow API)
+# 🌐 6. دالة جلب البيانات مع Cache لمنع Rate Limit (429)
 # ==========================================
+@st.cache_data(ttl=300, show_spinner="Fetching data from Everflow...")
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
     from_str = s_date.strftime("%Y-%m-%d")
@@ -369,14 +371,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 if not sub1_id and len(cols) > 1:
                     sub1_id = str(cols[1].get("id", cols[1].get("label", "")))
 
-                if sub1_id and sub1_id not in st.session_state["sub1_names"]:
-                    st.session_state["sub1_names"][sub1_id] = sub1_id
-                    save_json(USER_DATA_FILE, {
-                        "api_keys": st.session_state["api_keys"],
-                        "sub1_names": st.session_state["sub1_names"]
-                    })
-
-                custom_sub1_name = st.session_state["sub1_names"].get(sub1_id, sub1_id)
+                custom_sub1_name = st.session_state.get("sub1_names", {}).get(sub1_id, sub1_id)
 
                 payout = float(rep.get("payout", rep.get("revenue", 0.0)))
                 conversions = int(rep.get("cv", rep.get("conversions", 0)))
@@ -419,6 +414,9 @@ else:
         if res:
             for item in res:
                 item["Account"] = acc.get("name", f"Account #{idx+1}")
+                # التحديث الديناميكي لاسم sub1 المخصص في حالة تغييره حديثاً
+                sub1_id = item["Sub1 ID"]
+                item["Sub1 Name"] = st.session_state["sub1_names"].get(sub1_id, item["Sub1 Name"])
                 all_data.append(item)
 
 if all_data:
@@ -484,6 +482,7 @@ if all_data:
         ).strip()
     with perf_col2:
         if st.button("🔄 Refresh Data", type="primary", key="perf_refresh", use_container_width=True):
+            st.cache_data.clear()
             st.rerun()
 
     # تطبيق البحث بآلية حماية حتى لو كتب المستخدم رموز غريبة أو خطأ
@@ -495,7 +494,7 @@ if all_data:
             ).any(axis=1)
             filtered_df = filtered_df[search_mask]
         except Exception:
-            pass # عدم تجميد الصفحة في حال وقوع خطأ استثنائي
+            pass
 
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
     selected_columns = st.multiselect(
@@ -523,6 +522,6 @@ if all_data:
         st.warning("اختر عموداً واحداً على الأقل للعرض.")
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أرباح للفترة المحددة. تفقد قسم التشخيص:")
+        st.warning("لم يتم العثور على أرباح للفترة المحددة أو أن هناك تعارض مع API Limits. تفقد قسم التشخيص:")
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
