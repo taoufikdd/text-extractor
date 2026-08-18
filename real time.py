@@ -73,60 +73,30 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات من المسارات الصحيحة
+# 🌐 4. دالة جلب البيانات عبر Affiliate GET Endpoints
 # ==========================================
-def fetch_everflow_correct_data(api_key, s_date, e_date):
+def fetch_everflow_affiliate(api_key, s_date, e_date):
     clean_key = api_key.strip()
-    
+    from_str = s_date.strftime("%Y-%m-%d")
+    to_str = e_date.strftime("%Y-%m-%d")
+
     headers = {
         "x-eflow-api-key": clean_key,
         "Content-Type": "application/json"
     }
 
-    # المسارات الحقيقية المستعملة في Everflow للتقارير
-    endpoints_to_try = [
-        # 1. مسار Offers الرئيسي
-        {
-            "url": "https://api.eflow.team/v1/networks/reporting/offers",
-            "payload": {
-                "from": s_date.strftime("%Y-%m-%d"),
-                "to": e_date.strftime("%Y-%m-%d"),
-                "timezone_id": 54,
-                "currency_id": "USD",
-                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
-            }
-        },
-        # 2. مسار Sub1 الرئيسي
-        {
-            "url": "https://api.eflow.team/v1/networks/reporting/sub1",
-            "payload": {
-                "from": s_date.strftime("%Y-%m-%d"),
-                "to": e_date.strftime("%Y-%m-%d"),
-                "timezone_id": 54,
-                "currency_id": "USD",
-                "query": {"day_breakdown": False, "group_by": ["sub1"], "filters": []}
-            }
-        },
-        # 3. مسار Custom Reporting
-        {
-            "url": "https://api.eflow.team/v1/networks/reporting/custom",
-            "payload": {
-                "from": s_date.strftime("%Y-%m-%d"),
-                "to": e_date.strftime("%Y-%m-%d"),
-                "timezone_id": 54,
-                "currency_id": "USD",
-                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
-            }
-        }
+    # مسارات GET الخاصة بحسابات Partner/Affiliate فـ Everflow
+    get_endpoints = [
+        f"https://api.eflow.team/v1/affiliate/reporting/offers?from={from_str}&to={to_str}&timezone_id=54",
+        f"https://api.eflow.team/v1/affiliate/reporting/sub1?from={from_str}&to={to_str}&timezone_id=54",
+        f"https://api.eflow.team/v1/affiliate/reporting/summary?from={from_str}&to={to_str}&timezone_id=54"
     ]
 
     debug_logs = []
 
-    for ep in endpoints_to_try:
-        url = ep["url"]
-        payload = ep["payload"]
+    for url in get_endpoints:
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            res = requests.get(url, headers=headers, timeout=10)
             
             debug_logs.append({
                 "url": url,
@@ -136,28 +106,42 @@ def fetch_everflow_correct_data(api_key, s_date, e_date):
 
             if res.status_code == 200:
                 data = res.json()
-                table = data.get("table", [])
                 results = []
-                for row in table:
-                    cols = row.get("columns", [])
-                    rep = row.get("reporting", {})
-                    
-                    label = "Offer / General"
-                    if cols:
-                        label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
-                    
-                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                    conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                    clicks = int(rep.get("clicks", 0))
 
+                # في حالة العثور على جدول البيانات (Table)
+                if "table" in data:
+                    table = data.get("table", [])
+                    for row in table:
+                        cols = row.get("columns", [])
+                        rep = row.get("reporting", {})
+                        label = cols[0].get("label", cols[0].get("id", "Offer")) if cols else "Offer"
+                        
+                        revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                        conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
+                        clicks = int(rep.get("clicks", 0))
+
+                        results.append({
+                            "Item": str(label),
+                            "Clicks": clicks,
+                            "Conversions": conversions,
+                            "Revenue ($)": revenue
+                        })
+                # في حالة إرجاع Summary مباشر
+                elif "reporting" in data:
+                    rep = data.get("reporting", {})
+                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                    conversions = int(rep.get("conversions", 0))
+                    clicks = int(rep.get("clicks", 0))
                     results.append({
-                        "Item": label,
+                        "Item": "Overall Summary",
                         "Clicks": clicks,
                         "Conversions": conversions,
                         "Revenue ($)": revenue
                     })
+
                 if results:
                     return results, debug_logs
+
         except Exception as e:
             debug_logs.append({"url": url, "error": str(e)})
 
@@ -175,7 +159,7 @@ if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res, logs = fetch_everflow_correct_data(key, start_date, end_date)
+        res, logs = fetch_everflow_affiliate(key, start_date, end_date)
         all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
@@ -202,7 +186,7 @@ if all_data:
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أي أرباح. تفقد قسم التشخيص أسفله لمعرفة النتيجة:")
+        st.warning("لم يتم العثور على أي بيانات. تفقد قسم التشخيص أسفله لمعرفة الاستجابة:")
         
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
