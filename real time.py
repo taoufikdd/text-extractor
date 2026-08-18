@@ -39,7 +39,7 @@ if "api_keys" not in st.session_state:
     st.session_state["api_keys"] = load_keys()
 
 # ==========================================
-# ⚙️ 3. Sidebar
+# ⚙️ 3. القائمة الجانبية (Sidebar)
 # ==========================================
 st.sidebar.title("⚙️ Config")
 
@@ -73,86 +73,90 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات باستخدام Custom Domain
+# 🌐 4. دالة جلب البيانات الذكية (Everflow API Gateway)
 # ==========================================
-def fetch_everflow_exact(api_key, s_date, e_date):
+def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
-
-    # جلب البيانات عبر النطاق الخاص بشركتك وتجربة النطاق العام للسلامة
-    domains = [
-        "https://m-m.everflowclient.io",
-        "https://api.eflow.team"
-    ]
+    base_url = "https://api.eflow.team"
+    
+    headers = {
+        "x-eflow-api-key": clean_key,
+        "Content-Type": "application/json"
+    }
 
     payload = {
         "from": s_date.strftime("%Y-%m-%d"),
         "to": e_date.strftime("%Y-%m-%d"),
-        "timezone_id": 54, # Europe/Amsterdam كما موضح في حسابك
-        "currency_id": "USD",
-        "query": {
-            "day_breakdown": False,
-            "group_by": ["offer"],
-            "filters": []
-        }
+        "timezone_id": 54,
+        "currency_id": "USD"
     }
 
-    headers_list = [
-        {"x-eflow-api-key": clean_key, "Content-Type": "application/json"},
-        {"x-key": clean_key, "Content-Type": "application/json"}
-    ]
-
-    endpoints_path = [
-        "/v1/networks/reporting/offers",
-        "/v1/networks/reporting/sub1",
-        "/v1/networks/reporting/custom"
+    # اختبار تجريبي لمعرفة نوع المفتاح (Affiliate أم Network)
+    endpoints = [
+        {"type": "affiliate_offers", "url": f"{base_url}/v1/affiliates/reporting/offers", "method": "POST"},
+        {"type": "affiliate_summary", "url": f"{base_url}/v1/affiliates/reporting/summary", "method": "POST"},
+        {"type": "network_offers", "url": f"{base_url}/v1/networks/reporting/offers", "method": "POST", "payload": {**payload, "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}}}
     ]
 
     debug_logs = []
 
-    for domain in domains:
-        for headers in headers_list:
-            for path in endpoints_path:
-                url = f"{domain}{path}"
-                try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=10)
+    for ep in endpoints:
+        url = ep["url"]
+        req_payload = ep.get("payload", payload)
+        try:
+            res = requests.post(url, headers=headers, json=req_payload, timeout=10)
+            
+            debug_logs.append({
+                "url": url,
+                "status_code": res.status_code,
+                "response_text": res.text[:300]
+            })
+
+            if res.status_code == 200:
+                data = res.json()
+                results = []
+
+                # معالجة جدول العروض
+                if "table" in data:
+                    for row in data.get("table", []):
+                        cols = row.get("columns", [])
+                        rep = row.get("reporting", {})
+                        label = cols[0].get("label", cols[0].get("id", "Offer")) if cols else "Offer"
+                        
+                        revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                        conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
+                        clicks = int(rep.get("clicks", 0))
+
+                        results.append({
+                            "Item": str(label),
+                            "Clicks": clicks,
+                            "Conversions": conversions,
+                            "Revenue ($)": revenue
+                        })
+                # معالجة الملخص العام
+                elif "reporting" in data:
+                    rep = data.get("reporting", {})
+                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                    conversions = int(rep.get("conversions", 0))
+                    clicks = int(rep.get("clicks", 0))
                     
-                    debug_logs.append({
-                        "url": url,
-                        "status_code": res.status_code,
-                        "response_text": res.text[:300]
+                    results.append({
+                        "Item": "General Summary",
+                        "Clicks": clicks,
+                        "Conversions": conversions,
+                        "Revenue ($)": revenue
                     })
 
-                    if res.status_code == 200:
-                        data = res.json()
-                        table = data.get("table", [])
-                        results = []
-                        for row in table:
-                            cols = row.get("columns", [])
-                            rep = row.get("reporting", {})
-                            
-                            label = "Offer / Item"
-                            if cols:
-                                label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
-                            
-                            revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                            conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                            clicks = int(rep.get("clicks", 0))
+                if results:
+                    return results, debug_logs
 
-                            results.append({
-                                "Item": label,
-                                "Clicks": clicks,
-                                "Conversions": conversions,
-                                "Revenue ($)": revenue
-                            })
-                        if results:
-                            return results, debug_logs
-                except Exception as e:
-                    debug_logs.append({"url": url, "error": str(e)})
+        except Exception as e:
+            debug_logs.append({"url": url, "error": str(e)})
 
     return None, debug_logs
 
 # ==========================================
-# 📊 5. الشاشة الرئيسية
+# 📊 5. العرض الرئيسي
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 
@@ -163,7 +167,7 @@ if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res, logs = fetch_everflow_exact(key, start_date, end_date)
+        res, logs = fetch_everflow_data(key, start_date, end_date)
         all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
@@ -190,7 +194,6 @@ if all_data:
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أي بيانات. تفقد قسم التشخيص أسفله لمعرفة الاستجابة:")
-        
+        st.warning("لم يتم العثور على أرباح. تفقد قسم التشخيص:")
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
