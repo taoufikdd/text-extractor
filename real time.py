@@ -40,11 +40,10 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def get_user_data_file(username):
-    # ملف خاص ببيانات كل مستخدم
     return f"data_{username}.json"
 
 # ==========================================
-# 🔐 3. نظام تسجيل الدخول وإنشاء الحسابات
+# 🔐 3. نظام تسجيل الدخول مع Admin تلقائي
 # ==========================================
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
@@ -52,6 +51,13 @@ if "username" not in st.session_state:
     st.session_state["username"] = ""
 
 users_db = load_json(USERS_FILE, {})
+
+# إنشاء حساب admin تلقائياً بحال BBR / admin إذا كان الملف خاوي
+if not users_db:
+    default_admin_pass = "admin" # تقدر تبدلو هنا
+    users_db["admin"] = hash_password(default_admin_pass)
+    save_json(USERS_FILE, users_db)
+    save_json(get_user_data_file("admin"), {"api_keys": [], "sub1_names": {}})
 
 if not st.session_state["authenticated"]:
     st.title("🔐 Authentication Required")
@@ -61,10 +67,10 @@ if not st.session_state["authenticated"]:
     # --- تسجيل الدخول ---
     with tab1:
         st.subheader("Login to your dashboard")
-        login_user = st.text_input("Username", key="login_user").strip().lower()
-        login_pass = st.text_input("Password", type="password", key="login_pass")
+        login_user = st.text_input("Username", key="l_user").strip().lower()
+        login_pass = st.text_input("Password", type="password", key="l_pass")
         
-        if st.button("Login", type="primary"):
+        if st.button("Login", type="primary", key="btn_login"):
             if login_user in users_db and users_db[login_user] == hash_password(login_pass):
                 st.session_state["authenticated"] = True
                 st.session_state["username"] = login_user
@@ -76,29 +82,27 @@ if not st.session_state["authenticated"]:
     # --- إنشاء حساب جديد ---
     with tab2:
         st.subheader("Create a new account")
-        new_user = st.text_input("Choose Username", key="new_user").strip().lower()
-        new_pass = st.text_input("Choose Password", type="password", key="new_pass")
-        confirm_pass = st.text_input("Confirm Password", type="password", key="confirm_pass")
+        new_user = st.text_input("Choose Username", key="reg_user").strip().lower()
+        new_pass = st.text_input("Choose Password", type="password", key="reg_pass")
+        confirm_pass = st.text_input("Confirm Password", type="password", key="reg_confirm")
 
-        if st.button("Register"):
-            if not new_user or not new_pass:
+        if st.button("Register", key="btn_reg"):
+            if not new_user or not new_pass or not confirm_pass:
                 st.warning("Please fill in all fields.")
             elif new_user in users_db:
                 st.error("Username already exists! Choose another one.")
             elif new_pass != confirm_pass:
                 st.error("Passwords do not match!")
             else:
-                # حفظ الحساب الجديد
                 users_db[new_user] = hash_password(new_pass)
                 save_json(USERS_FILE, users_db)
 
-                # إنشاء ملف البيانات الأولي للمستخدم
                 user_file = get_user_data_file(new_user)
                 save_json(user_file, {"api_keys": [], "sub1_names": {}})
 
-                st.success("Account created successfully! You can now log in.")
+                st.success("Account created successfully! Go to Login tab.")
 
-    st.stop()  # إيقاف التنفيذ حتى يتم تسجيل الدخول
+    st.stop()
 
 # ==========================================
 # 📂 4. تحميل بيانات المستخدم الحالي
@@ -162,7 +166,6 @@ if st.sidebar.button("➕ Add Key"):
         final_name = acc_name.strip() if acc_name.strip() else f"Account #{len(st.session_state['api_keys']) + 1}"
         st.session_state["api_keys"].append({"name": final_name, "key": new_key.strip()})
         
-        # حفظ الحالات فملف المستخدم فقط
         save_json(USER_DATA_FILE, {
             "api_keys": st.session_state["api_keys"],
             "sub1_names": st.session_state["sub1_names"]
