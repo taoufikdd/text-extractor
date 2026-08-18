@@ -194,7 +194,6 @@ if "sub1_names" not in st.session_state:
 # ==========================================
 st.sidebar.title(f"👤 User: **{current_user.capitalize()}**")
 
-# زر التحديث في الـ Sidebar
 if st.sidebar.button("🔄 Refresh Data", use_container_width=True, key="sb_refresh"):
     st.rerun()
 
@@ -406,14 +405,8 @@ def fetch_everflow_data(api_key, s_date, e_date):
 # ==========================================
 # 📊 7. العرض الرئيسي
 # ==========================================
-header_col1, header_col2 = st.columns([8, 2])
-with header_col1:
-    st.title("💵 Live Revenue Tracker")
-    st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
-with header_col2:
-    st.write("") # مسافة للضبط
-    if st.button("🔄 Refresh Data", type="primary", key="main_refresh", use_container_width=True):
-        st.rerun()
+st.title("💵 Live Revenue Tracker")
+st.caption(f"👤 Logged in as: **{current_user}** | 📅 Selected Range: **{start_date}** to **{end_date}**")
 
 all_data = []
 all_debug_info = []
@@ -479,7 +472,14 @@ if all_data:
     col3.metric("🖱️ Total Clicks", f"{total_clicks:,}")
 
     st.markdown("---")
-    st.subheader("📊 Performance Details")
+    
+    # تم وضع زر Refresh Data هنا على اليمين مقابل Performance Details
+    perf_col1, perf_col2 = st.columns([8, 2])
+    with perf_col1:
+        st.subheader("📊 Performance Details")
+    with perf_col2:
+        if st.button("🔄 Refresh Data", type="primary", key="perf_refresh", use_container_width=True):
+            st.rerun()
 
     all_columns = ["Account", "Offer ID", "Offer Name", "Sub1 ID", "Sub1 Name", "Clicks", "Conversions", "Revenue ($)"]
     selected_columns = st.multiselect(
