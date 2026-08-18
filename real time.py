@@ -73,7 +73,7 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات الفعالة
+# 🌐 4. دالة جلب البيانات باستخدام Bounded Payload
 # ==========================================
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
@@ -85,40 +85,45 @@ def fetch_everflow_data(api_key, s_date, e_date):
         "Content-Type": "application/json"
     }
 
-    # اختبار عدة أنماط شائعة في Everflow API (GET & POST)
+    # الهيكلية الدقيقة للطلب المعتمد في Everflow Reporting
+    payload_offers = {
+        "from": from_str,
+        "to": to_str,
+        "timezone_id": 54,
+        "currency_id": "USD",
+        "query": {
+            "day_breakdown": False,
+            "group_by": ["offer"],
+            "filters": []
+        }
+    }
+
+    payload_summary = {
+        "from": from_str,
+        "to": to_str,
+        "timezone_id": 54,
+        "currency_id": "USD",
+        "query": {
+            "day_breakdown": False,
+            "filters": []
+        }
+    }
+
     attempts = [
-        # GET Requests (المصممة لـ Affiliate APIs)
-        {
-            "method": "GET",
-            "url": f"https://api.eflow.team/v1/affiliate/reporting/offers?from={from_str}&to={to_str}",
-            "payload": None
-        },
-        {
-            "method": "GET",
-            "url": f"https://api.eflow.team/v1/affiliate/reporting/summary?from={from_str}&to={to_str}",
-            "payload": None
-        },
-        # POST Requests
         {
             "method": "POST",
-            "url": "https://api.eflow.team/v1/affiliate/reporting/offers",
-            "payload": {
-                "from": from_str,
-                "to": to_str,
-                "timezone_id": 54,
-                "currency_id": "USD"
-            }
+            "url": "https://api.eflow.team/v1/networks/reporting/affiliates/offers",
+            "payload": payload_offers
         },
         {
             "method": "POST",
-            "url": "https://api.eflow.team/v1/networks/reporting/offers/summary",
-            "payload": {
-                "from": from_str,
-                "to": to_str,
-                "timezone_id": 54,
-                "currency_id": "USD",
-                "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
-            }
+            "url": "https://api.eflow.team/v1/networks/reporting/offers",
+            "payload": payload_offers
+        },
+        {
+            "method": "POST",
+            "url": "https://api.eflow.team/v1/networks/reporting/summary",
+            "payload": payload_summary
         }
     ]
 
@@ -130,10 +135,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
         payload = req["payload"]
 
         try:
-            if method == "GET":
-                res = requests.get(url, headers=headers, timeout=10)
-            else:
-                res = requests.post(url, headers=headers, json=payload, timeout=10)
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
 
             debug_logs.append({
                 "method": method,
@@ -146,13 +148,12 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 data = res.json()
                 results = []
 
-                # معالجة استجابة الجدول
                 if "table" in data:
                     for row in data.get("table", []):
                         cols = row.get("columns", [])
                         rep = row.get("reporting", {})
                         label = cols[0].get("label", cols[0].get("id", "Offer")) if cols else "Offer"
-                        
+
                         revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
                         conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
                         clicks = int(rep.get("clicks", 0))
@@ -163,9 +164,8 @@ def fetch_everflow_data(api_key, s_date, e_date):
                             "Conversions": conversions,
                             "Revenue ($)": revenue
                         })
-                # معالجة استجابة الملخص Direct Summary
-                elif "reporting" in data or "payout" in str(data):
-                    rep = data.get("reporting", data)
+                elif "reporting" in data:
+                    rep = data.get("reporting", {})
                     revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
                     conversions = int(rep.get("conversions", 0))
                     clicks = int(rep.get("clicks", 0))
@@ -206,7 +206,7 @@ else:
 
 if all_data:
     df = pd.DataFrame(all_data)
-    
+
     total_rev = df["Revenue ($)"].sum()
     total_conv = df["Conversions"].sum()
     total_clicks = df["Clicks"].sum()
