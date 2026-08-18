@@ -15,7 +15,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# تحديث تلقائي للصفحة كل 30 ثانية (Real-Time Tracker)
 st_autorefresh(interval=30000, limit=1000, key="realtime_counter")
 
 CONFIG_FILE = "affiliate_config.json"
@@ -31,7 +30,6 @@ def check_login():
     if st.session_state["authenticated"]:
         return True
 
-    # كلمات السر الافتراضية (يمكن تغييرها عبر Streamlit Secrets)
     ADMIN_PASS = st.secrets.get("ADMIN_PASSWORD", "admin12345")
     USER_PASS = st.secrets.get("USER_PASSWORD", "user12345")
 
@@ -60,9 +58,7 @@ if not check_login():
 # 💾 3. إدارة التخزين الدائم (Permanent Cache)
 # ==========================================
 def load_config():
-    """تحميل الإعدادات المحفوظة محلياً أو من السيرفر"""
     config = {"sub1_mapping": {}, "sponsors": []}
-    
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -80,7 +76,6 @@ def load_config():
     return config
 
 def save_config():
-    """حفظ التغييرات في ملف JSON دائم"""
     data = {
         "sub1_mapping": st.session_state["sub1_mapping"],
         "sponsors": st.session_state["sponsors"]
@@ -108,7 +103,6 @@ if st.sidebar.button("🚪 Logout"):
 
 st.sidebar.markdown("---")
 
-# --- أ) اختيار التاريخ (متاح لجميع المستخدمين) ---
 st.sidebar.subheader("📅 Date Range")
 col_d1, col_d2 = st.sidebar.columns(2)
 start_date = col_d1.date_input("From", date.today())
@@ -116,7 +110,6 @@ end_date = col_d2.date_input("To", date.today())
 
 st.sidebar.markdown("---")
 
-# --- ب) خصائص الأدمن فقط (إضافة وتعديل الربط والإعدادات) ---
 if user_role == "admin":
     st.sidebar.subheader("👤 Sub1 / Publisher Mapping")
     with st.sidebar.expander("➕ Add / Edit Sub1 Mapping"):
@@ -149,7 +142,7 @@ if user_role == "admin":
         s_api_key = st.text_input("API Key / Token:", type="password")
         s_endpoint = st.text_input(
             "API Endpoint URL:", 
-            placeholder="https://api.eflow.team/v1/affiliates/reporting/sub1"
+            value="https://api.eflow.team/v1/affiliates/reporting/sub1"
         )
         
         if st.button("Add Sponsor"):
@@ -182,17 +175,15 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
     endpoint = sponsor["endpoint"].strip()
     api_key = sponsor["api_key"].strip()
     
-    # تصحيح الدومين تلقائياً إذا أدخل المستخدم الدومين القديم
+    # تصحيح الـ Endpoint تلقائياً إذا كان فيه خطأ
     if "api.everflow.io" in endpoint:
         endpoint = endpoint.replace("api.everflow.io", "api.eflow.team")
-    
-    # معالجة طلبات Everflow API
+        
     if "eflow" in endpoint.lower() or "everflow" in endpoint.lower():
         headers = {
             "x-eflow-api-key": api_key,
             "Content-Type": "application/json"
         }
-        # إرسال query تتضمن group_by لجلب المعطيات بـ sub1
         payload = {
             "from": s_date.strftime("%Y-%m-%d"),
             "to": e_date.strftime("%Y-%m-%d"),
@@ -210,7 +201,6 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
                 res_json = response.json()
                 table_data = res_json.get("table", [])
                 parsed_items = []
-                
                 for row in table_data:
                     columns = row.get("columns", [])
                     reporting = row.get("reporting", {})
@@ -228,13 +218,12 @@ def fetch_sponsor_data(sponsor, s_date, e_date):
                     })
                 return parsed_items
             else:
-                st.error(f"Everflow API Error (Status {response.status_code}) for sponsor: {sponsor['name']}")
+                st.error(f"Everflow Response Error ({response.status_code}): {response.text}")
                 return None
         except Exception as e:
             st.error(f"Connection Error ({sponsor['name']}): {str(e)}")
             return None
 
-    # دعم المنصات الأخرى (Standard GET)
     else:
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -296,7 +285,6 @@ if all_reports:
 
     st.markdown("---")
 
-    # --- جدول الأرباح مقسم حسب الأشخاص ---
     st.subheader("👥 Revenue by Person (Grouped)")
     cols_to_sum = [c for c in ["Conversions", "Revenue ($)", "conversions", "revenue"] if c in df.columns]
     
