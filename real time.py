@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import streamlit as st
 
 # ==========================================
-# 1. إعداد الصفحة (بدون Autorefresh تلقائي)
+# 1. إعداد الصفحة
 # ==========================================
 st.set_page_config(
     page_title="Live Revenue Tracker",
@@ -221,7 +221,7 @@ else:
         st.sidebar.info(f"🔒 {len(st.session_state['api_keys'])} Active Account(s) Loaded.")
 
 # ==========================================
-# 🌐 6. دالة جلب البيانات المحسنة ضد 429
+# 🌐 6. دالة جلب البيانات (Payload مخفف + Auto Retry)
 # ==========================================
 @st.cache_data(ttl=600, show_spinner="Fetching data from Everflow...")
 def fetch_everflow_data(api_key, s_date, e_date):
@@ -236,12 +236,10 @@ def fetch_everflow_data(api_key, s_date, e_date):
 
     url = "https://api.eflow.team/v1/affiliates/reporting/entity/table"
 
-    # Payload خفيف بدون استهلاك زائد لـ BigQuery
+    # Payload مخفف لأقصى درجة لتفادي BigQuery Quota Limit
     payload = {
         "from": from_str,
         "to": to_str,
-        "timezone_id": 54,
-        "currency_id": "USD",
         "columns": [
             {"column": "offer"},
             {"column": "sub1"}
@@ -251,7 +249,6 @@ def fetch_everflow_data(api_key, s_date, e_date):
     debug_logs = []
     max_retries = 3
 
-    # محاولات إعادة الاتصال عند ظهور 429 (Retry Mechanism)
     for attempt in range(max_retries):
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=15)
@@ -311,8 +308,7 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 break
 
             elif res.status_code == 429:
-                # انتظر ثانيتين أو 4 ثواني قبل إعادة الطلب لتجاوز الـ Rate Limit
-                time.sleep(2 * (attempt + 1))
+                time.sleep(3 * (attempt + 1))
             else:
                 break
 
