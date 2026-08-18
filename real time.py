@@ -51,11 +51,16 @@ if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.toast("Data updated in real-time!", icon="✅")
 
-# --- AUTOMATIC FETCH FUNCTION ---
-@st.cache_data(ttl=60) # Auto-refresh kol 60 sec
-def fetch_sponsor_data_auto(api_url):
+# --- AUTOMATIC FETCH FUNCTION WITH AUTO-HTTPS FIX ---
+@st.cache_data(ttl=60)
+def fetch_sponsor_data_auto(api_input):
+    url = api_input.strip()
+    # Fix Scheme Exception: Zid https:// automatique ila ma-kantsch
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"https://{url}"
+
     try:
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
             return pd.DataFrame(data)
@@ -71,7 +76,7 @@ if st.session_state.role == "admin":
     with st.expander("➕ 1. Ajouter un Sponsor (API Link Direct)", expanded=False):
         c1, c2 = st.columns(2)
         sp_name = c1.text_input("Sponsor Name (ex: HasTraff)")
-        sp_url = c2.text_input("API Endpoint URL")
+        sp_url = c2.text_input("API Endpoint URL / Link")
         
         if st.button("Enregistrer Sponsor"):
             if sp_name and sp_url:
