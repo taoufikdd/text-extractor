@@ -39,7 +39,7 @@ if "api_keys" not in st.session_state:
     st.session_state["api_keys"] = load_keys()
 
 # ==========================================
-# ⚙️ 3. Sidebar
+# ⚙️ 3. القائمة الجانبية (Sidebar)
 # ==========================================
 st.sidebar.title("⚙️ Config")
 
@@ -73,7 +73,7 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات باستخدام Bounded Payload
+# 🌐 4. دالة جلب البيانات من Everflow Affiliate API
 # ==========================================
 def fetch_everflow_data(api_key, s_date, e_date):
     clean_key = api_key.strip()
@@ -85,60 +85,36 @@ def fetch_everflow_data(api_key, s_date, e_date):
         "Content-Type": "application/json"
     }
 
-    # الهيكلية الدقيقة للطلب المعتمد في Everflow Reporting
-    payload_offers = {
-        "from": from_str,
-        "to": to_str,
-        "timezone_id": 54,
-        "currency_id": "USD",
-        "query": {
-            "day_breakdown": False,
-            "group_by": ["offer"],
-            "filters": []
-        }
-    }
+    # الهيكلية الرسمية لطلب Everflow Affiliate Reporting Engine
+    url = "https://api.eflow.team/v1/affiliates/reporting/entity/table"
 
-    payload_summary = {
-        "from": from_str,
-        "to": to_str,
-        "timezone_id": 54,
-        "currency_id": "USD",
-        "query": {
-            "day_breakdown": False,
-            "filters": []
-        }
-    }
-
-    attempts = [
+    payload_options = [
+        # محاولة التجميع حسب العرض (Offer)
         {
-            "method": "POST",
-            "url": "https://api.eflow.team/v1/networks/reporting/affiliates/offers",
-            "payload": payload_offers
+            "from": from_str,
+            "to": to_str,
+            "timezone_id": 54,
+            "currency_id": "USD",
+            "columns": [{"column": "offer"}]
         },
+        # محاولة التجميع حسب sub1 (User)
         {
-            "method": "POST",
-            "url": "https://api.eflow.team/v1/networks/reporting/offers",
-            "payload": payload_offers
-        },
-        {
-            "method": "POST",
-            "url": "https://api.eflow.team/v1/networks/reporting/summary",
-            "payload": payload_summary
+            "from": from_str,
+            "to": to_str,
+            "timezone_id": 54,
+            "currency_id": "USD",
+            "columns": [{"column": "sub1"}]
         }
     ]
 
     debug_logs = []
 
-    for req in attempts:
-        url = req["url"]
-        method = req["method"]
-        payload = req["payload"]
-
+    for payload in payload_options:
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=10)
+            res = requests.post(url, headers=headers, json=payload, timeout=12)
 
             debug_logs.append({
-                "method": method,
+                "method": "POST",
                 "url": url,
                 "status_code": res.status_code,
                 "response_text": res.text[:300]
@@ -148,33 +124,21 @@ def fetch_everflow_data(api_key, s_date, e_date):
                 data = res.json()
                 results = []
 
-                if "table" in data:
-                    for row in data.get("table", []):
-                        cols = row.get("columns", [])
-                        rep = row.get("reporting", {})
-                        label = cols[0].get("label", cols[0].get("id", "Offer")) if cols else "Offer"
+                table_data = data.get("table", [])
+                for row in table_data:
+                    cols = row.get("columns", [])
+                    rep = row.get("reporting", {})
 
-                        revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                        conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                        clicks = int(rep.get("clicks", 0))
-
-                        results.append({
-                            "Item": str(label),
-                            "Clicks": clicks,
-                            "Conversions": conversions,
-                            "Revenue ($)": revenue
-                        })
-                elif "reporting" in data:
-                    rep = data.get("reporting", {})
-                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                    conversions = int(rep.get("conversions", 0))
-                    clicks = int(rep.get("clicks", 0))
+                    label = cols[0].get("label", cols[0].get("id", "N/A")) if cols else "Summary"
+                    payout = float(rep.get("payout", rep.get("revenue", 0.0)))
+                    conversions = int(rep.get("cv", rep.get("conversions", 0)))
+                    clicks = int(rep.get("total_click", rep.get("clicks", 0)))
 
                     results.append({
-                        "Item": "Overall Summary",
+                        "Item": str(label),
                         "Clicks": clicks,
                         "Conversions": conversions,
-                        "Revenue ($)": revenue
+                        "Revenue ($)": payout
                     })
 
                 if results:
@@ -224,6 +188,6 @@ if all_data:
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أرباح. تفقد قسم التشخيص:")
+        st.warning("لم يتم العثور على أرباح للفترة المحددة. تفقد قسم التشخيص:")
         with st.expander("🔍 Debugging Info", expanded=True):
             st.json(all_debug_info)
