@@ -73,87 +73,97 @@ if st.session_state["api_keys"]:
             st.rerun()
 
 # ==========================================
-# 🌐 4. دالة جلب البيانات الدقيقة
+# 🌐 4. دالة الاختبار التشخيصية (Debug Fetcher)
 # ==========================================
-def fetch_everflow_data(api_key, s_date, e_date):
+def test_and_fetch_everflow(api_key, s_date, e_date):
     clean_key = api_key.strip()
     
-    # تجريب الهيدرز المعتمدة في Everflow
-    headers_list = [
-        {"x-eflow-api-key": clean_key, "Content-Type": "application/json"},
-        {"x-key": clean_key, "Content-Type": "application/json"}
-    ]
+    # رأس الطلب المعتمد
+    headers = {
+        "x-eflow-api-key": clean_key,
+        "Content-Type": "application/json"
+    }
 
-    # التجارب على مستوى Offer و Sub1
-    payload_templates = [
-        {
-            "from": s_date.strftime("%Y-%m-%d"),
-            "to": e_date.strftime("%Y-%m-%d"),
-            "timezone_id": 54, # Europe/Amsterdam
-            "currency_id": "USD",
-            "query": {"day_breakdown": False, "group_by": ["offer"], "filters": []}
-        },
-        {
-            "from": s_date.strftime("%Y-%m-%d"),
-            "to": e_date.strftime("%Y-%m-%d"),
-            "timezone_id": 54,
-            "currency_id": "USD",
-            "query": {"day_breakdown": False, "group_by": ["sub1"], "filters": []}
+    # الهيكل القياسي لطلبات Everflow Affiliates
+    payload = {
+        "from": s_date.strftime("%Y-%m-%d"),
+        "to": e_date.strftime("%Y-%m-%d"),
+        "timezone_id": 54,
+        "currency_id": "USD",
+        "query": {
+            "day_breakdown": False,
+            "group_by": ["sub1"],
+            "filters": []
         }
-    ]
+    }
 
+    # اختبار أفضل 2 مسارات مخصصة للـ Affiliates
     endpoints = [
         "https://api.eflow.team/v1/affiliates/reporting/custom",
-        "https://api.eflow.team/v1/affiliates/reporting/offers",
-        "https://api.eflow.team/v1/affiliates/reporting/sub1"
+        "https://api.eflow.team/v1/affiliates/reporting/offers"
     ]
 
-    for headers in headers_list:
-        for payload in payload_templates:
-            for url in endpoints:
-                try:
-                    res = requests.post(url, headers=headers, json=payload, timeout=8)
-                    if res.status_code == 200:
-                        data = res.json()
-                        table = data.get("table", [])
-                        results = []
-                        for row in table:
-                            cols = row.get("columns", [])
-                            rep = row.get("reporting", {})
-                            
-                            label = "General"
-                            if cols:
-                                label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
-                            
-                            revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
-                            conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
-                            clicks = int(rep.get("clicks", 0))
+    debug_logs = []
+    
+    for url in endpoints:
+        # إذا كان المسار يستعلم عن العروض نغير المجموعات إلى offer
+        curr_payload = payload.copy()
+        if "offers" in url:
+            curr_payload["query"]["group_by"] = ["offer"]
 
-                            results.append({
-                                "Item": label,
-                                "Clicks": clicks,
-                                "Conversions": conversions,
-                                "Revenue ($)": revenue
-                            })
-                        if results:
-                            return results
-                except Exception:
-                    continue
+        try:
+            res = requests.post(url, headers=headers, json=curr_payload, timeout=10)
+            
+            # تسجيل الاستجابة للـ Debug
+            log_entry = {
+                "url": url,
+                "status_code": res.status_code,
+                "response_text": res.text[:300]
+            }
+            debug_logs.append(log_entry)
 
-    return None
+            if res.status_code == 200:
+                data = res.json()
+                table = data.get("table", [])
+                results = []
+                for row in table:
+                    cols = row.get("columns", [])
+                    rep = row.get("reporting", {})
+                    
+                    label = "General"
+                    if cols:
+                        label = str(cols[0].get("label", cols[0].get("id", "N/A"))).strip()
+                    
+                    revenue = float(rep.get("payout", rep.get("revenue", 0.0)))
+                    conversions = int(rep.get("conversions", rep.get("total_conversions", 0)))
+                    clicks = int(rep.get("clicks", 0))
+
+                    results.append({
+                        "Item": label,
+                        "Clicks": clicks,
+                        "Conversions": conversions,
+                        "Revenue ($)": revenue
+                    })
+                return results, debug_logs
+        except Exception as e:
+            debug_logs.append({"url": url, "error": str(e)})
+
+    return None, debug_logs
 
 # ==========================================
-# 📊 5. عرض النتائج
+# 📊 5. الشاشة الرئيسية
 # ==========================================
 st.title("💵 Live Revenue Tracker")
 
 all_data = []
+all_debug_info = []
 
 if not st.session_state["api_keys"]:
     st.info("👈 أضف الـ **API Key** في القائمة الجانبية (Sidebar) للبدء.")
 else:
     for idx, key in enumerate(st.session_state["api_keys"]):
-        res = fetch_everflow_data(key, start_date, end_date)
+        res, logs = test_and_fetch_everflow(key, start_date, end_date)
+        all_debug_info.append({"key_index": idx + 1, "logs": logs})
         if res:
             for item in res:
                 item["Key"] = f"Account #{idx+1}"
@@ -179,4 +189,8 @@ if all_data:
     )
 else:
     if st.session_state["api_keys"]:
-        st.warning("لم يتم العثور على أي بيانات. تأكد من تحديد التاريخ الصحيح (مثلاً 2026-08-18).")
+        st.warning("لم يتم جلب أي أرباح. تفقد قسم التشخيص (Debugging) أسفله لمعرفة الاستجابة:")
+        
+        # قسم طباعة أخطاء الاستجابة لمعرفة السبب بدقة
+        with st.expander("🔍 Debugging Info (استجابة الـ API الحقيقية)", expanded=True):
+            st.json(all_debug_info)
