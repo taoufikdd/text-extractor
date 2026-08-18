@@ -44,14 +44,21 @@ if st.session_state["theme"] == "light":
                 color: #1c1e21 !important;
             }
 
-            /* إصلاح خانات المدخلات والـ SelectBox */
-            div[data-baseweb="input"] > div, 
-            div[data-baseweb="select"] > div {
+            /* إصلاح خانات المدخلات (text_input, password, selectbox) بالكامل */
+            div[data-baseweb="input"], 
+            div[data-baseweb="input"] > div,
+            div[data-baseweb="select"] > div,
+            input {
                 background-color: #ffffff !important;
                 color: #1c1e21 !important;
-                border: 1px solid #ced4da !important;
+                border-color: #ced4da !important;
             }
             
+            /* لون الحدود عند التركيز فوك الخانة */
+            div[data-baseweb="input"]:focus-within {
+                border-color: #0d6efd !important;
+            }
+
             /* إصلاح الـ Multiselect Tags */
             span[data-baseweb="tag"] {
                 background-color: #e9ecef !important;
