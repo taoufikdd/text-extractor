@@ -1,85 +1,164 @@
-import streamlit as st
-import re
-
-st.set_page_config(layout="wide", page_title="SMTP Extractor & Scan Matcher")
-
-# Custom Dark Theme Styling
-st.markdown("""
-<style>
-    .stApp { background-color: #1e1e1e; color: #d4d4d4; }
-    div[data-baseweb="textarea"] textarea {
-        background-color: #252526 !important;
-        color: #d4d4d4 !important;
-        font-family: 'Courier New', Courier, monospace !important;
-        font-size: 13px !important;
-        border: 1px solid #3c3c3c !important;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>⚡ SMTP Extractor & Scan Matcher</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
-    label p { font-weight: bold !important; color: #61afef !important; font-size: 13px !important; }
-</style>
-""", unsafe_allow_html=True)
+    body {
+      background-color: #1e1e1e;
+      color: #d4d4d4;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 20px;
+    }
+    h1 {
+      font-size: 22px;
+      margin-bottom: 20px;
+      color: #ffffff;
+    }
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 768px) {
+      .container {
+        grid-template-columns: 1fr;
+      }
+    }
+    .box {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    label {
+      font-weight: bold;
+      color: #61afef;
+      font-size: 13px;
+      display: block;
+      margin-bottom: 6px;
+    }
+    textarea {
+      width: 100%;
+      height: 320px;
+      background-color: #252526;
+      color: #d4d4d4;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 13px;
+      border: 1px solid #3c3c3c;
+      border-radius: 4px;
+      padding: 10px;
+      resize: vertical;
+      outline: none;
+    }
+    textarea:focus {
+      border-color: #61afef;
+    }
+  </style>
+</head>
+<body>
 
-st.title("⚡ SMTP Extractor & Scan Matcher")
+  <h1>⚡ SMTP Extractor & Scan Matcher</h1>
 
-EMAIL_REGEX = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+  <div class="container">
+    <!-- Left Column: Inputs -->
+    <div class="box">
+      <div>
+        <label for="all_smtps">1. ALL_SMTPS (PASTE RAW SMTPS)</label>
+        <textarea id="all_smtps" placeholder="Paste All_smtps list here..."></textarea>
+      </div>
+      <div>
+        <label for="good_scan">3. GOOD_SCAN (PASTE SCANNED EMAILS/LIST)</label>
+        <textarea id="good_scan" placeholder="Paste Good_scan emails here..."></textarea>
+      </div>
+    </div>
 
-col1, col2 = st.columns(2)
+    <!-- Right Column: Outputs -->
+    <div class="box">
+      <div>
+        <label id="lbl_extract">2. EXTRACT_EMAIL (EXTRACTED: 0)</label>
+        <textarea id="extract_email" readonly></textarea>
+      </div>
+      <div>
+        <label id="lbl_matched">4. TEST_ALL (MATCHED: 0)</label>
+        <textarea id="test_all" readonly></textarea>
+      </div>
+    </div>
+  </div>
 
-with col1:
-    all_smtps = st.text_area(
-        "1. ALL_SMTPS (PASTE RAW SMTPS)", 
-        height=320, 
-        placeholder="Paste All_smtps list here...",
-        key="input_smtps"
-    )
-    good_scan = st.text_area(
-        "3. GOOD_SCAN (PASTE SCANNED EMAILS/LIST)", 
-        height=320, 
-        placeholder="Paste Good_scan emails here...",
-        key="input_scan"
-    )
+  <script>
+    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
-# Extract Logic
-extracted_emails = []
-smtp_map = {}
+    const inputSmtps = document.getElementById('all_smtps');
+    const inputScan = document.getElementById('good_scan');
+    const outputExtract = document.getElementById('extract_email');
+    const outputMatched = document.getElementById('test_all');
+    const lblExtract = document.getElementById('lbl_extract');
+    const lblMatched = document.getElementById('lbl_matched');
 
-if all_smtps and all_smtps.strip():
-    for line in all_smtps.splitlines():
-        line_clean = line.strip()
-        if not line_clean:
-            continue
-        matches = re.findall(EMAIL_REGEX, line_clean)
-        for email in matches:
-            email_lower = email.lower()
-            if email_lower not in smtp_map:
-                smtp_map[email_lower] = line_clean
-            if email_lower not in extracted_emails:
-                extracted_emails.append(email_lower)
+    function process() {
+      const allSmtpsText = inputSmtps.value;
+      const goodScanText = inputScan.value;
 
-# Match Logic
-matched_smtps = []
-if good_scan and good_scan.strip() and smtp_map:
-    scan_matches = re.findall(EMAIL_REGEX, good_scan)
-    seen_lines = set()
-    for scan_email in scan_matches:
-        em_lower = scan_email.lower()
-        if em_lower in smtp_map:
-            full_line = smtp_map[em_lower]
-            if full_line not in seen_lines:
-                seen_lines.add(full_line)
-                matched_smtps.append(full_line)
+      const extractedEmails = [];
+      const smtpMap = new Map();
 
-# Output Display (Without blocking keys)
-with col2:
-    extracted_text = "\n".join(extracted_emails)
-    st.text_area(
-        f"2. EXTRACT_EMAIL (EXTRACTED: {len(extracted_emails)})", 
-        value=extracted_text, 
-        height=320
-    )
-    
-    matched_text = "\n".join(matched_smtps)
-    st.text_area(
-        f"4. TEST_ALL (MATCHED: {len(matched_smtps)})", 
-        value=matched_text, 
-        height=320
-    )
+      if (allSmtpsText.trim()) {
+        const lines = allSmtpsText.split(/\r?\n/);
+        for (let line of lines) {
+          const lineClean = line.trim();
+          if (!lineClean) continue;
+
+          const matches = lineClean.match(emailRegex);
+          if (matches) {
+            for (let email of matches) {
+              const emailLower = email.toLowerCase();
+              if (!smtpMap.has(emailLower)) {
+                smtpMap.set(emailLower, lineClean);
+              }
+              if (!extractedEmails.includes(emailLower)) {
+                extractedEmails.push(emailLower);
+              }
+            }
+          }
+        }
+      }
+
+      // Update Extract Output UI
+      outputExtract.value = extractedEmails.join('\n');
+      lblExtract.textContent = `2. EXTRACT_EMAIL (EXTRACTED: ${extractedEmails.length})`;
+
+      // Match Logic
+      const matchedSmtps = [];
+      if (goodScanText.trim() && smtpMap.size > 0) {
+        const scanMatches = goodScanText.match(emailRegex);
+        const seenLines = new Set();
+        if (scanMatches) {
+          for (let scanEmail of scanMatches) {
+            const emLower = scanEmail.toLowerCase();
+            if (smtpMap.has(emLower)) {
+              const fullLine = smtpMap.get(emLower);
+              if (!seenLines.has(fullLine)) {
+                seenLines.add(fullLine);
+                matchedSmtps.push(fullLine);
+              }
+            }
+          }
+        }
+      }
+
+      // Update Matched Output UI
+      outputMatched.value = matchedSmtps.join('\n');
+      lblMatched.textContent = `4. TEST_ALL (MATCHED: ${matchedSmtps.length})`;
+    }
+
+    inputSmtps.addEventListener('input', process);
+    inputScan.addEventListener('input', process);
+  </script>
+</body>
+</html>
