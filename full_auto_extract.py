@@ -4,153 +4,130 @@ import imaplib
 import re
 import streamlit as st
 
-# ==========================================
-# 1. Page Configuration
-# ==========================================
-st.set_page_config(
-    page_title="Gmail Extractor & SMTP Matcher",
-    page_icon="⚡",
-    layout="wide"
-)
+# Config Page
+st.set_page_config(page_title="Gmail IMAP Extractor & Matcher", page_icon="⚡", layout="wide")
 
-st.title("⚡ Gmail Extractor & SMTP Matcher")
-st.write("Extract sender emails via IMAP and match them directly with your SMTP list.")
+st.title("⚡ Gmail Real IMAP Extractor & SMTP Matcher")
+st.write("استخراج الحسابات الحقيقي عبر بروتوكول IMAP والمطابقة المباشرة")
 
-GMAIL_REGEX = re.compile(
-    r"^[a-zA-Z0-9._%+-]+@gmail\.com$", re.IGNORECASE
-)
+GMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@gmail\.com$", re.IGNORECASE)
 
-# ==========================================
-# 2. IMAP Sender Extractor Function
-# ==========================================
-def fetch_senders_from_inbox(user_email, app_password, status_placeholder, progress_bar):
-    sender_emails = set()
-
+def extract_senders_from_folder(mail, folder_name, status_box, progress_bar, p_start, p_end):
+    senders = set()
     try:
-        status_placeholder.info(f"Connecting to IMAP for {user_email}...")
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        clean_pass = app_password.replace(" ", "")
-        mail.login(user_email, clean_pass)
+        status, _ = mail.select(f'"{folder_name}"')
+        if status != "OK":
+            return senders
 
-        mail.select("inbox")
         status, messages = mail.search(None, "ALL")
+        if status != "OK" or not messages[0]:
+            return senders
 
         mail_ids = messages[0].split()
-        total_msgs = len(mail_ids)
+        total = len(mail_ids)
+        if total == 0:
+            return senders
 
-        if total_msgs == 0:
-            status_placeholder.warning("No messages found in Inbox.")
-            mail.logout()
-            return sender_emails
-
-        status_placeholder.info(f"Found {total_msgs} messages. Extracting senders...")
-
-        batch_size = 100
-        for i in range(0, total_msgs, batch_size):
-            batch_ids = mail_ids[i : i + batch_size]
+        batch_size = 50
+        for i in range(0, total, batch_size):
+            batch_ids = mail_ids[i:i + batch_size]
             batch_str = b",".join(batch_ids)
 
-            _, msg_data = mail.fetch(
-                batch_str, "(BODY.PEEK[HEADER.FIELDS (FROM)])"
-            )
+            _, msg_data = mail.fetch(batch_str, "(BODY.PEEK[HEADER.FIELDS (FROM)])")
 
             for response_part in msg_data:
                 if isinstance(response_part, tuple):
                     try:
                         raw_header = response_part[1].decode("utf-8", errors="ignore")
                         msg = email.message_from_string(raw_header)
-                        from_header = msg.get("From", "")
-
-                        real_name, email_address = parseaddr(from_header)
-                        email_address = email_address.strip().lower()
-
-                        if GMAIL_REGEX.match(email_address):
-                            sender_emails.add(email_address)
+                        from_hdr = msg.get("From", "")
+                        _, addr = parseaddr(from_hdr)
+                        addr = addr.strip().lower()
+                        if GMAIL_REGEX.match(addr):
+                            senders.add(addr)
                     except Exception:
                         pass
 
-            processed_count = min(i + batch_size, total_msgs)
-            progress_bar.progress(processed_count / total_msgs)
-            status_placeholder.info(
-                f"Processed: {processed_count}/{total_msgs} | Unique senders: {len(sender_emails)}"
-            )
-
-        mail.logout()
-        return sender_emails
+            processed = min(i + batch_size, total)
+            prog = p_start + (processed / total) * (p_end - p_start)
+            progress_bar.progress(min(prog, 1.0))
+            status_box.info(f"📁 [{folder_name}] Processed {processed}/{total} emails | Found {len(senders)} unique senders")
 
     except Exception as e:
-        status_placeholder.error(f"IMAP Error: {e}")
-        return sender_emails
+        status_box.warning(f"Warning reading {folder_name}: {e}")
 
-# ==========================================
-# 3. Input Layout
-# ==========================================
+    return senders
+
+def run_extraction(email_addr, app_pass, folder_choice, status_box, progress_bar):
+    all_senders = set()
+    try:
+        status_box.info("Connecting to imap.gmail.com:993...")
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        clean_pass = app_pass.replace(" ", "")
+        mail.login(email_addr, clean_pass)
+
+        if folder_choice == "INBOX":
+            all_senders.update(extract_senders_from_folder(mail, "INBOX", status_box, progress_bar, 0.0, 1.0))
+        elif folder_choice == "SPAM":
+            all_senders.update(extract_senders_from_folder(mail, "[Gmail]/Spam", status_box, progress_bar, 0.0, 1.0))
+        elif folder_choice == "ALL (INBOX + SPAM)":
+            status_box.info("Scanning INBOX...")
+            inbox_s = extract_senders_from_folder(mail, "INBOX", status_box, progress_bar, 0.0, 0.5)
+            all_senders.update(inbox_s)
+            
+            status_box.info("Scanning SPAM...")
+            spam_s = extract_senders_from_folder(mail, "[Gmail]/Spam", status_box, progress_bar, 0.5, 1.0)
+            all_senders.update(spam_s)
+
+        mail.logout()
+        return all_senders
+
+    except Exception as e:
+        status_box.error(f"❌ Connection Error: {e}")
+        return all_senders
+
+# UI Layout
 col1, col2 = st.columns(2)
-
 with col1:
     st.subheader("🔑 1. Gmail Credentials")
-    user_email = st.text_input("Gmail Address:", placeholder="example@gmail.com")
-    app_password = st.text_input("App Password (16-char):", type="password")
+    user_email = st.text_input("Gmail Address", placeholder="example@gmail.com")
+    app_password = st.text_input("App Password (16-digit)", type="password")
+    folder_target = st.selectbox("Target Folder", ["INBOX", "SPAM", "ALL (INBOX + SPAM)"])
 
 with col2:
     st.subheader("📋 2. SMTP List")
-    smtp_raw_input = st.text_area(
-        "Paste SMTP list directly here:",
-        height=140,
-        placeholder="smtp.gmail.com,587,email1@gmail.com,pass1\nsmtp.gmail.com,587,email2@gmail.com,pass2"
-    )
+    smtp_input = st.text_area("Paste SMTP list here:", height=200, placeholder="smtp.gmail.com,587,email@gmail.com,pass")
 
-st.markdown("---")
-
-# ==========================================
-# 4. Execution & Results Display
-# ==========================================
-if st.button("🚀 Start Extraction & Matching", type="primary"):
+if st.button("🚀 Start Real IMAP Extraction", type="primary"):
     if not user_email or not app_password:
-        st.error("Please enter both Gmail Address and App Password.")
+        st.error("Please enter Email Address & App Password!")
     else:
         status_box = st.empty()
         p_bar = st.progress(0)
+        
+        senders = run_extraction(user_email, app_password, folder_target, status_box, p_bar)
+        
+        if senders:
+            status_box.success(f" Done! Successfully extracted {len(senders)} senders.")
+            res_col1, res_col2 = st.columns(2)
+            
+            senders_txt = "\n".join(sorted(senders))
+            with res_col1:
+                st.subheader(f"📬 Extracted Senders ({len(senders)})")
+                st.code(senders_txt, language="text")
 
-        extracted_senders = fetch_senders_from_inbox(user_email, app_password, status_box, p_bar)
-
-        if extracted_senders:
-            status_box.success(f"Successfully extracted {len(extracted_senders)} unique sender(s)!")
-
-            col_res1, col_res2 = st.columns(2)
-
-            # Column 1: Extracted Senders Result
-            extracted_txt = "\n".join(sorted(extracted_senders))
-            with col_res1:
-                st.subheader("📬 1. Extracted Senders")
-                st.caption("Copy with one click using the top-right button in the box:")
-                st.code(extracted_txt, language="text")
-
-            # Column 2: Matched SMTPs Result
-            if smtp_raw_input.strip():
-                smtp_lines = smtp_raw_input.strip().splitlines()
+            if smtp_input.strip():
                 smtp_db = {}
-                for line in smtp_lines:
-                    clean_line = line.strip()
-                    if not clean_line:
-                        continue
-                    parts = clean_line.split(",")
-                    for part in parts:
+                for line in smtp_input.strip().splitlines():
+                    for part in line.split(","):
                         clean_part = part.strip().lower()
                         if GMAIL_REGEX.match(clean_part):
-                            smtp_db[clean_part] = clean_line
+                            smtp_db[clean_part] = line.strip()
                             break
-
-                matched_lines = [smtp_db[em] for em in extracted_senders if em in smtp_db]
-                matched_txt = "\n".join(matched_lines)
-
-                with col_res2:
-                    st.subheader("⚡ 2. Matched SMTPs")
-                    st.caption("Copy with one click using the top-right button in the box:")
-                    if matched_lines:
-                        st.code(matched_txt, language="text")
-                    else:
-                        st.warning("No matches found between extracted senders and the SMTP list.")
-            else:
-                with col_res2:
-                    st.info("Paste your SMTP list above if you want to perform matching.")
+                
+                matched = [smtp_db[s] for s in senders if s in smtp_db]
+                with res_col2:
+                    st.subheader(f"⚡ Matched SMTPs ({len(matched)})")
+                    st.code("\n".join(matched) if matched else "No matches found.", language="text")
+        else:
+            status_box.warning("No senders found or authentication failed.")
