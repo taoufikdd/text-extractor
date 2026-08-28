@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import json
 
-# الكلمات المفتاحية للبحث عن ملفات/روابط الإلغاء
+# الكلمات المفتاحية للبحث عن ملفات/روابط الإلغاء فـ JSON
 SUPPRESSION_KEYWORDS = [
     "suppression", "suppression_file", "suppression_url", "suppression list",
     "blacklist", "exclusion", "exclude", "optout", "opt_out", "do_not_contact", "dnc"
@@ -59,12 +59,16 @@ def extract_field_by_candidates(offer, candidates, default="N/A"):
                 return str(val)
             if isinstance(val, list):
                 return ", ".join(map(str, val))
+            if isinstance(val, dict):
+                for sub_k in ["name", "code", "iso", "id", "display_name"]:
+                    if sub_k in val and val[sub_k]:
+                        return str(val[sub_k])
     return default
 
 def fetch_api_data(url, auth_method, api_key, custom_header_name):
-    """الاتصال بـ API واستخراج البيانات بحماية ضد أخطاء SSL والاستجابات الفارغة"""
+    """الاتصال بـ API واستخراج البيانات بحماية ضد أخطاء SSL والـ Pagination"""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
     }
     
@@ -77,22 +81,26 @@ def fetch_api_data(url, auth_method, api_key, custom_header_name):
     elif auth_method == "Custom Header" and custom_header_name:
         headers[custom_header_name.strip()] = api_key.strip()
 
-    # الاتصال بالرابط مع تعطيل تحقق SSL تجنباً لأخطاء الشهادات
-    response = requests.get(url.strip(), headers=headers, timeout=30, verify=False)
+    clean_url = url.strip()
+    # إضافة المعطيات تلقائياً لـ Everflow لمنع خطأ 500
+    if ("everflow" in clean_url.lower() or "eflow" in clean_url.lower()) and "?" not in clean_url:
+        clean_url += "?page=1&page_size=100"
+
+    response = requests.get(clean_url, headers=headers, timeout=30, verify=False)
     
-    # التحقق من حالة الطلب
     if response.status_code == 401 or response.status_code == 403:
-        raise Exception(f"خطأ في التوثيق ({response.status_code}): تأكد من صحة الـ API Key و Header Name.")
+        raise Exception(f"خطأ في التوثيق (HTTP {response.status_code}): تأكد من صحة الـ API Key و Header Name.")
     elif response.status_code != 200:
-        raise Exception(f"فشل الاتصال بـ API. كود الاستجابة: {response.status_code}")
+        error_msg = response.text[:200] if response.text else "No error body"
+        raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {error_msg}")
         
     if not response.text.strip():
-        raise Exception("الـ API أرجع استجابة فارغة. تأكد من صحة الرابط والـ Key.")
+        raise Exception("الـ API أرجع استجابة فارغة. تأكد من صحة الرابط.")
 
     try:
         return response.json()
     except Exception:
-        raise Exception("الاستجابة التي أرجعها السيرفر ليست بتنسيق JSON صحيح.")
+        raise Exception("فشل تحويل الاستجابة إلى JSON.")
 
 def download_suppression_file(url):
     """تحميل ملف Suppression"""
@@ -113,8 +121,12 @@ st.caption("كشف واستخراج ملفات Suppression تلقائياً من
 # القائمة الجانبية
 with st.sidebar:
     st.header("Sponsor Configuration")
-    sponsor_name = st.text_input("Sponsor Name", placeholder="مثال: XI Leads")
-    api_url = st.text_input("API Endpoint URL", placeholder="https://api.eflow.team/v1/affiliates/offers")
+    sponsor_name = st.text_input("Sponsor Name", value="XI Leads", placeholder="e.g., XI Leads")
+    api_url = st.text_input(
+        "API Endpoint URL", 
+        value="https://api.eflow.team/v1/affiliates/offers?page=1&page_size=100",
+        placeholder="https://api.eflow.team/v1/affiliates/offers?page=1&page_size=100"
+    )
     
     auth_method = st.selectbox(
         "Authentication Method",
@@ -151,7 +163,7 @@ if scan_submitted:
                         
                         offer_id = extract_field_by_candidates(offer, ["network_offer_id", "offer_id", "id", "campaign_id"])
                         offer_name = extract_field_by_candidates(offer, ["name", "title", "offer_name", "campaign_name"])
-                        geo = extract_field_by_candidates(offer, ["geo", "countries", "country", "relationship"])
+                        geo = extract_field_by_candidates(offer, ["geo", "countries", "country", "relationship", "target_countries"])
 
                         suppression_matches = scan_suppression_recursive(offer)
                         
