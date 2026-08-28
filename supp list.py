@@ -4,7 +4,7 @@ import pandas as pd
 import json
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
-    """جلب جميع العروض (Active + Paused)"""
+    """جلب جميع العروض مع التفاصيل الكاملة"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -65,47 +65,51 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
     return all_offers, headers
 
-def get_everflow_suppression_download_url(network_offer_id, headers):
-    """جلب رابط التحميل المباشر والاسم الأصلي لملف الـ Suppression من Everflow"""
-    try:
-        # 1. طلب الـ Suppression الخاص بالعرض المحدد
-        url = f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}/suppression"
-        resp = requests.get(url, headers=headers, timeout=15, verify=False)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            # استخراج رابط S3 والمسمى الوظيفي
-            download_url = data.get("download_url") or data.get("file_url") or data.get("url")
-            filename = data.get("filename") or data.get("name")
-            
-            if download_url:
-                if not filename:
-                    # استخراج اسم الملف من الرابط إن تعذر إيجاد اسمه الصريح
-                    filename = download_url.split("?")[0].split("/")[-1]
-                return download_url, filename, None
+def extract_direct_suppression_url(offer_obj):
+    """استخراج رابط التحميل المباشر والاسم الحقيقي لملف التنسيق الأصلي"""
+    download_url = None
+    filename = None
 
-        # 2. خطة بديلة: فحص تفاصيل العرض نفسه
-        url_offer = f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}"
-        resp_offer = requests.get(url_offer, headers=headers, timeout=15, verify=False)
-        if resp_offer.status_code == 200:
-            off_data = resp_offer.json()
-            rel = off_data.get("relationship", {})
-            supp = rel.get("suppression_list", {}) or off_data.get("suppression_list", {})
-            if isinstance(supp, dict) and supp.get("download_url"):
-                fname = supp.get("filename") or supp.get("download_url").split("?")[0].split("/")[-1]
-                return supp.get("download_url"), fname, None
+    # البحث داخل الـ object المرجوع من Everflow
+    # 1. البحث فـ relationship
+    rel = offer_obj.get("relationship", {})
+    if isinstance(rel, dict):
+        supp_obj = rel.get("suppression_list") or rel.get("suppression")
+        if isinstance(supp_obj, dict):
+            download_url = supp_obj.get("download_url") or supp_obj.get("file_url") or supp_obj.get("url")
+            filename = supp_obj.get("filename") or supp_obj.get("name")
 
-        return None, None, f"HTTP Status {resp.status_code}"
-    except Exception as e:
-        return None, None, str(e)
+    # 2. البحث فـ الجذر الرئيسي للـ offer
+    if not download_url:
+        supp_obj = offer_obj.get("suppression_list") or offer_obj.get("suppression")
+        if isinstance(supp_obj, dict):
+            download_url = supp_obj.get("download_url") or supp_obj.get("file_url") or supp_obj.get("url")
+            filename = supp_obj.get("filename") or supp_obj.get("name")
+
+    # 3. البحث في الحقول النصية المباشرة
+    if not download_url:
+        for key in ["suppression_download_url", "suppression_file_url", "suppression_url", "unsubscribe_url"]:
+            val = offer_obj.get(key)
+            if val and isinstance(val, str) and val.startswith("http"):
+                download_url = val
+                break
+
+    if download_url:
+        if not filename:
+            filename = download_url.split("?")[0].split("/")[-1]
+            if not filename.endswith(".zip") and not filename.endswith(".txt"):
+                filename = f"suppression_list_{offer_obj.get('network_offer_id', 'file')}.zip"
+        return download_url, filename
+
+    return None, None
 
 def download_file_bytes(url):
-    """تنزيل محتوى الملف مباشرة من رابط S3"""
+    """تنزيل محتوى الملف مباشرة بدون مشاكل CORS أو Auth"""
     res = requests.get(url, timeout=120, verify=False)
     res.raise_for_status()
     return res.content
 
-# --- UI Setup ---
+# --- Streamlit UI ---
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
 st.title("🛡️ Affiliate Suppression List Detector")
 
@@ -129,7 +133,7 @@ if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("المرجو إدخال البيانات المطلوبة.")
     else:
-        with st.spinner("جاري فحص جميع العروض (النشطة والموقوفة)..."):
+        with st.spinner("جاري فحص جميع العروض واستخراج روابط الـ Suppression الأصلية..."):
             try:
                 offers_list, headers_used = fetch_all_offers_everflow(api_url, auth_method, api_key, custom_header_name)
 
@@ -154,7 +158,10 @@ if scan_submitted:
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
 
-                        if has_supp or (supp_id and str(supp_id) != "0"):
+                        # استخراج الرابط المباشر للملف الأصلي المرفق مع العرض
+                        dl_url, filename = extract_direct_suppression_url(offer)
+
+                        if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
                             has_suppression = "Yes"
                         else:
                             has_suppression = "No"
@@ -166,21 +173,23 @@ if scan_submitted:
                             "Status": str(offer_status),
                             "GEO": geo_info,
                             "Suppression Found": has_suppression,
-                            "Suppression ID": str(supp_id)
+                            "Suppression ID": str(supp_id),
+                            "Download_URL": dl_url,
+                            "Filename": filename
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
-                    st.session_state["headers_used"] = headers_used
                     st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# عرض نتائج التحميل
+# عرض أزرار التحميل المباشرة
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
-    headers_used = st.session_state.get("headers_used", {})
 
-    st.dataframe(df, use_container_width=True)
+    # عرض الجدول العام
+    display_df = df.drop(columns=["Download_URL", "Filename"], errors="ignore")
+    st.dataframe(display_df, use_container_width=True)
 
     supp_df = df[df["Suppression Found"] == "Yes"]
     if not supp_df.empty:
@@ -191,9 +200,9 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             d_col1, d_col2 = st.columns([3, 1])
             d_col1.write(f"**[{row['Status']}] {row['Offer Name']}** (Offer ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
-            # جلب الرابط واسم الملف الأصلي الصحيح
-            dl_url, exact_filename, err = get_everflow_suppression_download_url(row["Offer ID"], headers_used)
-            
+            dl_url = row.get("Download_URL")
+            exact_filename = row.get("Filename") or f"suppression_{row['Offer ID']}.zip"
+
             if dl_url:
                 try:
                     file_data = download_file_bytes(dl_url)
@@ -206,4 +215,4 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 except Exception as ex:
                     d_col2.error(f"خطأ فـ التحميل: {str(ex)[:30]}")
             else:
-                d_col2.warning(f"غير متوفر ({err if err else 'N/A'})")
+                d_col2.warning("الرابط المباشر غير مدرج من السبونسر")
