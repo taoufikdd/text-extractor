@@ -5,9 +5,10 @@ import json
 import zipfile
 import io
 import os
+import re
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
-    """جلب جميع العروض مع التفاصيل الكاملة بما فيها روابط suppression الخفية"""
+    """جلب جميع العروض"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -68,43 +69,59 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
     return all_offers, headers
 
-def extract_suppression_url_from_offer_obj(offer):
-    """استخراج رابط AWS S3 المباشر من بيانات العرض نفسها بدون 404"""
-    urls = []
+def deep_search_suppression_url(obj):
+    """فحص عميق للـ JSON لاستخراج أي رابط تنزيل مباشر أو رابط Optizmo/UnsubCentral"""
+    if not obj:
+        return None
     
-    # 1. البحث فـ relationship
-    rel = offer.get("relationship", {})
-    if isinstance(rel, dict):
-        supp = rel.get("suppression_list", {}) or rel.get("suppression", {})
-        if isinstance(supp, dict):
-            for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
-                if supp.get(k) and str(supp.get(k)).startswith("http"):
-                    urls.append(supp.get(k))
+    # 1. البحث النصي المباشر عبر regex فـ الـ JSON كاملا
+    str_obj = json.dumps(obj)
+    
+    # البحث عن روابط التحميل المباشرة لملفات zip أو txt أو روابط optizmo / unsubcentral
+    patterns = [
+        r'https?://[^\s"]+\.zip[^\s"]*',
+        r'https?://[^\s"]*optizmo[^\s"]*',
+        r'https?://[^\s"]*unsubcentral[^\s"]*',
+        r'https?://[^\s"]*suppress[^\s"]*',
+        r'https?://[^\s"]*download[^\s"]*suppression[^\s"]*'
+    ]
+    
+    for pat in patterns:
+        matches = re.findall(pat, str_obj, re.IGNORECASE)
+        if matches:
+            return matches[0]
 
-    # 2. البحث فـ الجذر الرئيسي للـ Offer
-    supp_main = offer.get("suppression_list", {}) or offer.get("suppression", {})
-    if isinstance(supp_main, dict):
-        for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
-            if supp_main.get(k) and str(supp_main.get(k)).startswith("http"):
-                urls.append(supp_main.get(k))
+    # 2. فحص الخصائص المحددة فـ Everflow
+    if isinstance(obj, dict):
+        email_sec = obj.get("email_instructions") or obj.get("email") or {}
+        if isinstance(email_sec, dict):
+            for k in ["suppression_link", "unsubscribe_link", "optout_link", "suppression_download_url"]:
+                if email_sec.get(k):
+                    return email_sec.get(k)
+                    
+        rel = obj.get("relationship", {})
+        if isinstance(rel, dict):
+            supp = rel.get("suppression_list", {}) or rel.get("suppression", {})
+            if isinstance(supp, dict):
+                for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
+                    if supp.get(k):
+                        return supp.get(k)
 
-    # 3. البحث في الحقول النصية المباشرة
-    for k in ["suppression_download_url", "suppression_file_url", "suppression_url", "unsubscribe_url", "optout_url"]:
-        val = offer.get(k)
-        if val and isinstance(val, str) and val.startswith("http"):
-            urls.append(val)
-
-    if urls:
-        return urls[0]
     return None
 
 def download_and_unpack_zip(url):
-    """تحميل الأرشيف وتفكيكه فـ الـ Memory لاستخراج ملفات txt مباشرة"""
+    """تحميل الملف وتفكيك الأرشيف لاستخراج ملفات txt مباشرة"""
     extracted_files = {}
-    res = requests.get(url, timeout=120, verify=False)
+    
+    # تحويل روابط Optizmo للملف المباشر إن وجدت
+    if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
+        if not url.endswith("/"):
+            url += "/"
+        url += "download"
+
+    res = requests.get(url, timeout=120, verify=False, allow_redirects=True)
     res.raise_for_status()
     
-    # محاولة فك الضغط إذا كان zip
     try:
         with zipfile.ZipFile(io.BytesIO(res.content)) as z:
             for zip_info in z.infolist():
@@ -115,8 +132,9 @@ def download_and_unpack_zip(url):
                     file_content = z.read(zip_info.filename)
                     extracted_files[fname] = file_content
     except Exception:
-        # إذا لم يكن ZIP، إرجاع الملف كما هو
-        fname = url.split("?")[0].split("/")[-1] or "suppression_file.txt"
+        fname = url.split("?")[0].split("/")[-1] or "suppression_list.txt"
+        if not fname.endswith(".txt") and not fname.endswith(".csv"):
+            fname += ".txt"
         extracted_files[fname] = res.content
         
     return extracted_files
@@ -145,7 +163,7 @@ if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("المرجو إدخال البيانات المطلوبة.")
     else:
-        with st.spinner("جاري فحص جميع العروض واكتشاف روابط Suppression..."):
+        with st.spinner("جاري فحص جميع العروض واكتشاف الروابط العميقة للـ Suppression..."):
             try:
                 offers_list, headers_used = fetch_all_offers_everflow(api_url, auth_method, api_key, custom_header_name)
 
@@ -170,8 +188,8 @@ if scan_submitted:
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
                         
-                        # استخراج الرابط الحقيقي المباشر
-                        dl_url = extract_suppression_url_from_offer_obj(offer)
+                        # فحص عميق للرابط
+                        dl_url = deep_search_suppression_url(offer)
 
                         if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
                             has_suppression = "Yes"
@@ -201,7 +219,6 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
 
-    # عرض جدول العروض العام
     display_df = df.drop(columns=["Direct_URL", "Raw_Offer_Data"], errors="ignore")
     st.dataframe(display_df, use_container_width=True)
 
@@ -214,15 +231,14 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
             dl_url = row.get("Direct_URL")
-            offer_obj = row.get("Raw_Offer_Data", {})
-
-            # إذا لم يجد الرابط المباشر في الكائن، يحاول تجربة الـ API الخاصة بالـ optout برقم العرض
+            
+            # تجربة إضافية للاتصال بـ single offer API للحصول على تفاصيل أعمق إن لم يظهر الرابط
             if not dl_url:
                 try:
-                    opt_res = requests.get(f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}/optout", headers=headers_used, timeout=10, verify=False)
-                    if opt_res.status_code == 200:
-                        opt_data = opt_res.json()
-                        dl_url = opt_data.get("download_url") or opt_data.get("url")
+                    single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
+                    res_single = requests.get(single_url, headers=headers_used, timeout=10, verify=False)
+                    if res_single.status_code == 200:
+                        dl_url = deep_search_suppression_url(res_single.json())
                 except Exception:
                     pass
 
@@ -243,4 +259,4 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 except Exception as ex:
                     st.error(f"خطأ أثناء استخراج الملف: {str(ex)}")
             else:
-                st.warning("الرابط المباشر للملف غائب في استجابة السبونسر لهاد العرض (يتطلب طلب يدوي من الداشبورد)")
+                st.warning("هذا العرض يستخدم نظام Suppression محمي أو يتطلب موافقة خاصة من السبونسر.")
