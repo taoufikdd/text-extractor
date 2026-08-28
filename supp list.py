@@ -11,8 +11,10 @@ import urllib3
 # تعطيل تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# ⚠️ خاص هذه تكون هي أاول خطوة فـ الكود بعد الـ imports
+st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
+
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
-    """جلب جميع العروض"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -41,43 +43,48 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
     while True:
         paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}&relationship=all&offer_status=all"
-        response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
-        
-        if response.status_code != 200:
-            if page == 1:
-                paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
-                response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
-                if response.status_code != 200:
-                    raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {response.text[:200]}")
-            else:
-                break
-
-        json_data = response.json()
-        offers_chunk = []
-        if isinstance(json_data, list):
-            offers_chunk = json_data
-        elif isinstance(json_data, dict):
-            for k in ["offers", "data", "results", "items"]:
-                if k in json_data and isinstance(json_data[k], list):
-                    offers_chunk = json_data[k]
+        try:
+            response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+            if response.status_code != 200:
+                if page == 1:
+                    paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
+                    response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+                    if response.status_code != 200:
+                        break
+                else:
                     break
 
-        if not offers_chunk:
-            break
+            json_data = response.json()
+            offers_chunk = []
+            if isinstance(json_data, list):
+                offers_chunk = json_data
+            elif isinstance(json_data, dict):
+                for k in ["offers", "data", "results", "items"]:
+                    if k in json_data and isinstance(json_data[k], list):
+                        offers_chunk = json_data[k]
+                        break
 
-        all_offers.extend(offers_chunk)
-        if len(offers_chunk) < page_size:
+            if not offers_chunk:
+                break
+
+            all_offers.extend(offers_chunk)
+            if len(offers_chunk) < page_size:
+                break
+            page += 1
+        except Exception:
             break
-        page += 1
 
     return all_offers, headers
 
 def deep_search_suppression_url(obj):
-    """استخراج رابط التنزيل"""
     if not obj:
         return None
     
-    str_obj = json.dumps(obj)
+    try:
+        str_obj = json.dumps(obj)
+    except Exception:
+        str_obj = str(obj)
+
     patterns = [
         r'https?://[^\s"]+\.zip[^\s"]*',
         r'https?://[^\s"]*optizmo[^\s"]*',
@@ -109,7 +116,6 @@ def deep_search_suppression_url(obj):
     return None
 
 def fetch_file_content(url):
-    """تنزيل محتوى الملف بأمان مع تجاوز حمايات SSL"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
         if not url.endswith("/"):
@@ -121,7 +127,6 @@ def fetch_file_content(url):
     return res.content
 
 def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.txt"):
-    """فك ضغط ZIP وتوليد الملفات النصية"""
     extracted_files = {}
     try:
         with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
@@ -137,12 +142,10 @@ def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.t
     return extracted_files
 
 def extract_emails_only(text_content):
-    """استخراج الإيميلات فقط عبر Regex الحصري للإيميلات"""
     email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
     return re.findall(email_pattern, text_content)
 
-# --- UI Setup ---
-st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
+# --- UI Interface ---
 st.title("🛡️ Affiliate Suppression List Detector")
 
 with st.sidebar:
@@ -211,14 +214,16 @@ if scan_submitted:
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
                     st.session_state["headers_used"] = headers_used
+                    st.session_state["sponsor_name"] = sponsor_name
                     st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# عرض أزرار التحميل المباشر والزر المجمع النهائي
+# Display Results
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
+    s_name = st.session_state.get("sponsor_name", "Sponsor")
 
     display_df = df.drop(columns=["Direct_URL", "Raw_Offer_Data"], errors="ignore")
     st.dataframe(display_df, use_container_width=True)
@@ -226,10 +231,8 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     supp_df = df[df["Suppression Found"] == "Yes"]
     if not supp_df.empty:
         st.markdown("---")
-        
         st.subheader("⚡ دمج وتنقية جميع ملفات الـ Suppression")
-        st.info("اضغط على الزر أدناه لبدء عملية تنزيل جميع الملفات، استخراج الإيميلات وحذف التكرار تلقائياً.")
-
+        
         if st.button("🚀 Process & Merge All Email Suppressions", type="primary", use_container_width=True):
             unique_emails = set()
             total_files_processed = 0
@@ -239,7 +242,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             total_rows = len(supp_df)
 
             for i, (_, row) in enumerate(supp_df.iterrows()):
-                status_text.text(f"جاري معالجة العرض ({i+1}/{total_rows}): {row['Offer Name']}...")
+                status_text.text(f"جاري معالجة ({i+1}/{total_rows}): {row['Offer Name']}...")
                 progress_bar.progress((i + 1) / total_rows)
 
                 dl_url = row.get("Direct_URL")
@@ -274,12 +277,12 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if unique_emails:
                 cleaned_content = "\n".join(sorted(unique_emails))
-                st.success(f"✅ تم النجاح! تم استخراج {len(unique_emails):,} إيميل فريد (Unique Emails) بدون تكرار من {total_files_processed} ملف.")
+                st.success(f"✅ تم استخراج {len(unique_emails):,} إيميل فريد من {total_files_processed} ملف.")
 
                 st.download_button(
                     label=f"💾 تحميل ملف الإيميلات المدمج ({len(unique_emails):,} Emails)",
                     data=cleaned_content,
-                    file_name=f"all_suppression_emails_cleaned_{sponsor_name.replace(' ', '_')}.txt",
+                    file_name=f"all_suppression_emails_{s_name.replace(' ', '_')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
@@ -304,11 +307,10 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if dl_url:
                 try:
-                    # جلب المحتوى أولاً لتفعيل زر التحميل
                     raw_bytes = fetch_file_content(dl_url)
                     files_dict = extract_raw_files_from_bytes(raw_bytes)
                     
-                    cols = st.columns(min(len(files_dict), 4))
+                    cols = st.columns(min(max(len(files_dict), 1), 4))
                     c_idx = 0
                     for fname, content in files_dict.items():
                         col = cols[c_idx % len(cols)]
@@ -316,10 +318,10 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                             label=f"📄 {fname}",
                             data=content,
                             file_name=fname,
-                            key=f"dl_txt_file_{row['Offer ID']}_{c_idx}_{idx}"
+                            key=f"dl_btn_{row['Offer ID']}_{c_idx}_{idx}"
                         )
                         c_idx += 1
                 except Exception as ex:
-                    st.error(f"خطأ أثناء استخراج الملف: {str(ex)}")
+                    st.error(f"خطأ أثناء جلب الملف: {str(ex)}")
             else:
-                st.warning("هذا العرض يتطلب طلب يدوي من الداشبورد أو لا يحتوي على رابط مباشر.")
+                st.warning("لا يوجد رابط تحميل مباشر متوفر لهذا العرض.")
