@@ -7,11 +7,11 @@ import io
 import os
 import re
 import urllib3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # تعطيل تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ⚠️ خاص هذه تكون هي أاول خطوة فـ الكود بعد الـ imports
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
@@ -44,11 +44,11 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
     while True:
         paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}&relationship=all&offer_status=all"
         try:
-            response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+            response = requests.get(paginated_url, headers=headers, timeout=20, verify=False)
             if response.status_code != 200:
                 if page == 1:
                     paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
-                    response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+                    response = requests.get(paginated_url, headers=headers, timeout=20, verify=False)
                     if response.status_code != 200:
                         break
                 else:
@@ -79,7 +79,6 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 def deep_search_suppression_url(obj):
     if not obj:
         return None
-    
     try:
         str_obj = json.dumps(obj)
     except Exception:
@@ -115,38 +114,41 @@ def deep_search_suppression_url(obj):
 
     return None
 
-def fetch_file_content(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
-        if not url.endswith("/"):
-            url += "/"
-        url += "download"
-
-    res = requests.get(url, headers=headers, timeout=120, verify=False, allow_redirects=True)
-    res.raise_for_status()
-    return res.content
-
-def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.txt"):
-    extracted_files = {}
+def fetch_and_extract_emails_single_url(dl_url):
+    """تحميل واستخراج الإيميلات من رابط واحد بأسرع وقت"""
+    emails = set()
     try:
-        with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
-            for zip_info in z.infolist():
-                if zip_info.is_dir():
-                    continue
-                fname = os.path.basename(zip_info.filename)
-                if fname and not fname.startswith('.'):
-                    extracted_files[fname] = z.read(zip_info.filename)
-    except Exception:
-        extracted_files[default_name] = content_bytes
-        
-    return extracted_files
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        if "optizmo" in dl_url.lower() and "/access/" in dl_url.lower() and not dl_url.endswith("/download"):
+            if not dl_url.endswith("/"):
+                dl_url += "/"
+            dl_url += "download"
 
-def extract_emails_only(text_content):
-    email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
-    return re.findall(email_pattern, text_content)
+        res = requests.get(dl_url, headers=headers, timeout=25, verify=False, allow_redirects=True)
+        if res.status_code == 200:
+            content_bytes = res.content
+            # فك ZIP إذا كان ZIP
+            try:
+                with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
+                    for zip_info in z.infolist():
+                        if zip_info.is_dir():
+                            continue
+                        fname = os.path.basename(zip_info.filename)
+                        if fname and not fname.startswith('.'):
+                            raw_data = z.read(zip_info.filename)
+                            text_str = raw_data.decode('utf-8', errors='ignore')
+                            found = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_str)
+                            emails.update([e.lower().strip() for e in found])
+            except Exception:
+                text_str = content_bytes.decode('utf-8', errors='ignore')
+                found = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_str)
+                emails.update([e.lower().strip() for e in found])
+    except Exception:
+        pass
+    return emails
 
 # --- UI Interface ---
-st.title("🛡️ Affiliate Suppression List Detector")
+st.title("🛡️ Fast Affiliate Suppression List Merger")
 
 with st.sidebar:
     st.header("Sponsor Configuration")
@@ -192,7 +194,6 @@ if scan_submitted:
 
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
-                        
                         dl_url = deep_search_suppression_url(offer)
 
                         if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
@@ -208,120 +209,68 @@ if scan_submitted:
                             "GEO": geo_info,
                             "Suppression Found": has_suppression,
                             "Suppression ID": str(supp_id),
-                            "Direct_URL": dl_url,
-                            "Raw_Offer_Data": offer
+                            "Direct_URL": dl_url
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
-                    st.session_state["headers_used"] = headers_used
                     st.session_state["sponsor_name"] = sponsor_name
                     st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# Display Results
+# Display Results & Processing
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
-    headers_used = st.session_state.get("headers_used", {})
     s_name = st.session_state.get("sponsor_name", "Sponsor")
 
-    display_df = df.drop(columns=["Direct_URL", "Raw_Offer_Data"], errors="ignore")
+    display_df = df.drop(columns=["Direct_URL"], errors="ignore")
     st.dataframe(display_df, use_container_width=True)
 
-    supp_df = df[df["Suppression Found"] == "Yes"]
+    supp_df = df[(df["Suppression Found"] == "Yes") & (df["Direct_URL"].notna()) & (df["Direct_URL"] != "")]
+    
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ دمج وتنقية جميع ملفات الـ Suppression")
+        st.subheader("⚡ دمج سريع جداً مع حذف التكرار (Multi-Threaded)")
         
-        if st.button("🚀 Process & Merge All Email Suppressions", type="primary", use_container_width=True):
-            unique_emails = set()
-            total_files_processed = 0
+        urls_to_download = supp_df["Direct_URL"].dropna().unique().tolist()
+        st.write(f"📊 عدد روابط التحميل المباشرة المجهزة للدمج: **{len(urls_to_download)} رابط**.")
 
+        if st.button("🚀 Fast Merge & Clean All Suppressions", type="primary", use_container_width=True):
+            all_unique_emails = set()
             progress_bar = st.progress(0)
             status_text = st.empty()
-            total_rows = len(supp_df)
+            
+            total_urls = len(urls_to_download)
+            completed = 0
 
-            for i, (_, row) in enumerate(supp_df.iterrows()):
-                status_text.text(f"جاري معالجة ({i+1}/{total_rows}): {row['Offer Name']}...")
-                progress_bar.progress((i + 1) / total_rows)
-
-                dl_url = row.get("Direct_URL")
-                if not dl_url:
+            # استخدام Multi-threading للتحميل بسرعة فائقة (10 مسارات فـ نفس الوقت)
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_url = {executor.submit(fetch_and_extract_emails_single_url, url): url for url in urls_to_download}
+                
+                for future in as_completed(future_to_url):
+                    completed += 1
+                    status_text.text(f"جاري التحميل والمعالجة بالتوازي: ({completed}/{total_urls})...")
+                    progress_bar.progress(completed / total_urls)
+                    
                     try:
-                        single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
-                        res_single = requests.get(single_url, headers=headers_used, timeout=10, verify=False)
-                        if res_single.status_code == 200:
-                            dl_url = deep_search_suppression_url(res_single.json())
-                    except Exception:
-                        pass
-
-                if dl_url:
-                    try:
-                        content_bytes = fetch_file_content(dl_url)
-                        files_dict = extract_raw_files_from_bytes(content_bytes)
-                        for fname, file_raw in files_dict.items():
-                            try:
-                                text_str = file_raw.decode('utf-8', errors='ignore')
-                            except Exception:
-                                text_str = str(file_raw)
-
-                            found_emails = extract_emails_only(text_str)
-                            if found_emails:
-                                unique_emails.update([e.lower().strip() for e in found_emails])
-                                total_files_processed += 1
+                        extracted = future.result()
+                        all_unique_emails.update(extracted)
                     except Exception:
                         pass
 
             status_text.empty()
             progress_bar.empty()
 
-            if unique_emails:
-                cleaned_content = "\n".join(sorted(unique_emails))
-                st.success(f"✅ تم استخراج {len(unique_emails):,} إيميل فريد من {total_files_processed} ملف.")
+            if all_unique_emails:
+                cleaned_content = "\n".join(sorted(all_unique_emails))
+                st.success(f"⚡ اكتملت العملية فـ ثواني! تم استخراج {len(all_unique_emails):,} إيميل فريد بدون أي تكرار.")
 
                 st.download_button(
-                    label=f"💾 تحميل ملف الإيميلات المدمج ({len(unique_emails):,} Emails)",
+                    label=f"💾 تحميل ملف الإيميلات المدمج النهائي ({len(all_unique_emails):,} Emails)",
                     data=cleaned_content,
-                    file_name=f"all_suppression_emails_{s_name.replace(' ', '_')}.txt",
+                    file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
             else:
                 st.warning("لم يتم العثور على إيميلات فـ الملفات المفحوصة.")
-
-        st.markdown("---")
-        st.subheader("📄 التحميل الفردي للملفات (Unpacked)")
-        
-        for idx, row in supp_df.iterrows():
-            st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
-            
-            dl_url = row.get("Direct_URL")
-            if not dl_url:
-                try:
-                    single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
-                    res_single = requests.get(single_url, headers=headers_used, timeout=10, verify=False)
-                    if res_single.status_code == 200:
-                        dl_url = deep_search_suppression_url(res_single.json())
-                except Exception:
-                    pass
-
-            if dl_url:
-                try:
-                    raw_bytes = fetch_file_content(dl_url)
-                    files_dict = extract_raw_files_from_bytes(raw_bytes)
-                    
-                    cols = st.columns(min(max(len(files_dict), 1), 4))
-                    c_idx = 0
-                    for fname, content in files_dict.items():
-                        col = cols[c_idx % len(cols)]
-                        col.download_button(
-                            label=f"📄 {fname}",
-                            data=content,
-                            file_name=fname,
-                            key=f"dl_btn_{row['Offer ID']}_{c_idx}_{idx}"
-                        )
-                        c_idx += 1
-                except Exception as ex:
-                    st.error(f"خطأ أثناء جلب الملف: {str(ex)}")
-            else:
-                st.warning("لا يوجد رابط تحميل مباشر متوفر لهذا العرض.")
