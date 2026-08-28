@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # تعطيل تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# إعداد الصفحة (يجب أن يكون أول أمر من Streamlit)
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
@@ -116,6 +115,7 @@ def deep_search_suppression_url(obj):
     return None
 
 def fetch_and_extract_emails_single_url(dl_url):
+    """تحميل واستخراج الإيميلات من رابط واحد بأسرع وقت"""
     emails = set()
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -127,6 +127,7 @@ def fetch_and_extract_emails_single_url(dl_url):
         res = requests.get(dl_url, headers=headers, timeout=25, verify=False, allow_redirects=True)
         if res.status_code == 200:
             content_bytes = res.content
+            # فك ZIP إذا كان ZIP
             try:
                 with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
                     for zip_info in z.infolist():
@@ -242,6 +243,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             total_urls = len(urls_to_download)
             completed = 0
 
+            # استخدام Multi-threading للتحميل بسرعة فائقة (10 مسارات فـ نفس الوقت)
             with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_url = {executor.submit(fetch_and_extract_emails_single_url, url): url for url in urls_to_download}
                 
