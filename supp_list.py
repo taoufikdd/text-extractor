@@ -10,7 +10,6 @@ import re
 import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# تعطيل تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="Affiliate Suppression Merger", page_icon="🛡️", layout="wide")
@@ -139,7 +138,6 @@ def extract_emails(content_bytes):
     emails = set()
     regex = re.compile(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
-    # ZIP
     try:
         with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
             for fname in z.namelist():
@@ -151,7 +149,6 @@ def extract_emails(content_bytes):
     except Exception:
         pass
 
-    # GZIP
     try:
         text = gzip.decompress(content_bytes).decode('utf-8', errors='ignore')
         emails.update([e.lower() for e in regex.findall(text)])
@@ -160,7 +157,6 @@ def extract_emails(content_bytes):
     except Exception:
         pass
 
-    # Plain text
     try:
         text = content_bytes.decode('utf-8', errors='ignore')
         emails.update([e.lower() for e in regex.findall(text)])
@@ -186,7 +182,6 @@ def process_offer(row, headers_used):
             pass
     return emails
 
-# --- App UI ---
 st.title("🛡️ Suppression List Merger & Cleaner")
 
 with st.sidebar:
@@ -207,14 +202,14 @@ with st.sidebar:
 
 if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
-        st.error("المرجو إدخال البيانات المطلوبة.")
+        st.error("Please fill in required fields.")
     else:
-        with st.spinner("جاري جلب العروض..."):
+        with st.spinner("Fetching offers..."):
             try:
                 offers_list, headers_used = fetch_all_offers(api_url, auth_method, api_key, custom_header_name)
 
                 if not offers_list:
-                    st.warning("لم يتم العثور على عروض.")
+                    st.warning("No offers found.")
                 else:
                     processed = []
                     for offer in offers_list:
@@ -251,9 +246,9 @@ if scan_submitted:
                     st.session_state["scan_results"] = pd.DataFrame(processed)
                     st.session_state["headers_used"] = headers_used
                     st.session_state["sponsor_name"] = sponsor_name
-                    st.success(f"تم فحص {len(processed)} عرض بنجاح.")
+                    st.success(f"Scanned {len(processed)} offers successfully.")
             except Exception as e:
-                st.error(f"حدث خطأ: {str(e)}")
+                st.error(f"Error: {str(e)}")
 
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
@@ -266,7 +261,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ دمج واستخراج الإيميلات")
+        st.subheader("⚡ Merge & Extract Emails")
         
         if st.button("🚀 Fast Merge & Clean All Suppressions", type="primary", use_container_width=True):
             all_emails = set()
@@ -290,13 +285,13 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if all_emails:
                 cleaned = "\n".join(sorted(all_emails))
-                st.success(f"تم استخراج {len(all_emails):,} إيميل فريد بنجاح!")
+                st.success(f"Extracted {len(all_emails):,} unique emails!")
                 st.download_button(
-                    label=f"💾 تحميل ملف الإيميلات المدمج ({len(all_emails):,} Emails)",
+                    label=f"💾 Download Merged Emails ({len(all_emails):,} Emails)",
                     data=cleaned,
                     file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
             else:
-                st.warning("لم يتم العثور على إيميلات فـ الملفات.")
+                st.warning("No emails extracted from files.")
