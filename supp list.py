@@ -6,6 +6,10 @@ import zipfile
 import io
 import os
 import re
+import urllib3
+
+# تعطيل تحذيرات SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
     """جلب جميع العروض"""
@@ -15,7 +19,6 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
     }
     
     clean_url = base_url.strip()
-    
     if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
         if "/v1/affiliates/offers" in clean_url and "/alloffers" not in clean_url:
             clean_url = clean_url.replace("/v1/affiliates/offers", "/v1/affiliates/alloffers")
@@ -70,12 +73,11 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
     return all_offers, headers
 
 def deep_search_suppression_url(obj):
-    """فحص عميق للـ JSON لاستخراج أي رابط تنزيل مباشر"""
+    """استخراج رابط التنزيل"""
     if not obj:
         return None
     
     str_obj = json.dumps(obj)
-    
     patterns = [
         r'https?://[^\s"]+\.zip[^\s"]*',
         r'https?://[^\s"]*optizmo[^\s"]*',
@@ -106,32 +108,31 @@ def deep_search_suppression_url(obj):
 
     return None
 
-def extract_raw_files_from_url(url):
-    """تنزيل وتفكيك الملف واستخراج محتوياته النصية"""
-    extracted_files = {}
-    
+def fetch_file_content(url):
+    """تنزيل محتوى الملف بأمان مع تجاوز حمايات SSL"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
         if not url.endswith("/"):
             url += "/"
         url += "download"
 
-    res = requests.get(url, timeout=120, verify=False, allow_redirects=True)
+    res = requests.get(url, headers=headers, timeout=120, verify=False, allow_redirects=True)
     res.raise_for_status()
-    
+    return res.content
+
+def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.txt"):
+    """فك ضغط ZIP وتوليد الملفات النصية"""
+    extracted_files = {}
     try:
-        with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+        with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
             for zip_info in z.infolist():
                 if zip_info.is_dir():
                     continue
                 fname = os.path.basename(zip_info.filename)
                 if fname and not fname.startswith('.'):
-                    file_content = z.read(zip_info.filename)
-                    extracted_files[fname] = file_content
+                    extracted_files[fname] = z.read(zip_info.filename)
     except Exception:
-        fname = url.split("?")[0].split("/")[-1] or "suppression_list.txt"
-        if not fname.endswith(".txt") and not fname.endswith(".csv"):
-            fname += ".txt"
-        extracted_files[fname] = res.content
+        extracted_files[default_name] = content_bytes
         
     return extracted_files
 
@@ -226,9 +227,8 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     if not supp_df.empty:
         st.markdown("---")
         
-        # --- زر التحميل المجمع والتنقية الرهيب ---
         st.subheader("⚡ دمج وتنقية جميع ملفات الـ Suppression")
-        st.info("هاد الزر كيدوز على كاع العروض، كينزل الملفات، كيعزل غير الإيميلات الصحيحة، وكيحيد التكرار 100%.")
+        st.info("اضغط على الزر أدناه لبدء عملية تنزيل جميع الملفات، استخراج الإيميلات وحذف التكرار تلقائياً.")
 
         if st.button("🚀 Process & Merge All Email Suppressions", type="primary", use_container_width=True):
             unique_emails = set()
@@ -236,7 +236,6 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             progress_bar = st.progress(0)
             status_text = st.empty()
-
             total_rows = len(supp_df)
 
             for i, (_, row) in enumerate(supp_df.iterrows()):
@@ -244,7 +243,6 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 progress_bar.progress((i + 1) / total_rows)
 
                 dl_url = row.get("Direct_URL")
-                
                 if not dl_url:
                     try:
                         single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
@@ -256,17 +254,16 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
                 if dl_url:
                     try:
-                        files_dict = extract_raw_files_from_url(dl_url)
-                        for fname, content_bytes in files_dict.items():
+                        content_bytes = fetch_file_content(dl_url)
+                        files_dict = extract_raw_files_from_bytes(content_bytes)
+                        for fname, file_raw in files_dict.items():
                             try:
-                                text_str = content_bytes.decode('utf-8', errors='ignore')
+                                text_str = file_raw.decode('utf-8', errors='ignore')
                             except Exception:
-                                text_str = str(content_bytes)
+                                text_str = str(file_raw)
 
-                            # استخراج الإيميلات فقط بدون دومينات أو نصوص أخرى
                             found_emails = extract_emails_only(text_str)
                             if found_emails:
-                                # تحويلها لـ lowercase وحفظها فـ set لمنع التكرار
                                 unique_emails.update([e.lower().strip() for e in found_emails])
                                 total_files_processed += 1
                     except Exception:
@@ -307,7 +304,10 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if dl_url:
                 try:
-                    files_dict = extract_raw_files_from_url(dl_url)
+                    # جلب المحتوى أولاً لتفعيل زر التحميل
+                    raw_bytes = fetch_file_content(dl_url)
+                    files_dict = extract_raw_files_from_bytes(raw_bytes)
+                    
                     cols = st.columns(min(len(files_dict), 4))
                     c_idx = 0
                     for fname, content in files_dict.items():
