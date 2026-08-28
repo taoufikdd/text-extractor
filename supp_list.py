@@ -98,6 +98,10 @@ def deep_search_suppression_url(obj):
             return str(matches[0])
 
     if isinstance(obj, dict):
+        for key in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url", "suppression_download_url"]:
+            if obj.get(key) and isinstance(obj.get(key), str) and obj.get(key).startswith("http"):
+                return obj.get(key)
+
         email_sec = obj.get("email_instructions") or obj.get("email") or {}
         if isinstance(email_sec, dict):
             for k in ["suppression_link", "unsubscribe_link", "optout_link", "suppression_download_url"]:
@@ -114,10 +118,12 @@ def deep_search_suppression_url(obj):
 
     return ""
 
-def fetch_single_offer_url(offer_id, headers):
-    """جلب تفاصيل عرض واحد مع التوصيل بـ relationship=suppression_list"""
+def fetch_suppression_url_by_id(supp_id, headers):
+    """جلب رابط التنزيل المباشر باستخدام Suppression List ID فـ Everflow"""
+    if not supp_id or str(supp_id) == "0":
+        return ""
     try:
-        url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}?relationship=suppression_list"
+        url = f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}"
         res = requests.get(url, headers=headers, timeout=10, verify=False)
         if res.status_code == 200:
             return deep_search_suppression_url(res.json())
@@ -125,20 +131,47 @@ def fetch_single_offer_url(offer_id, headers):
         pass
     return ""
 
+def fetch_single_offer_url(offer_id, supp_id, headers):
+    """البحث عن الرابط أولاً عبر Suppression List ID ثم عبر تفاصيل العرض"""
+    if supp_id and str(supp_id) != "0":
+        url_from_supp_api = fetch_suppression_url_by_id(supp_id, headers)
+        if url_from_supp_api:
+            return url_from_supp_api
+
+    try:
+        url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}?relationship=suppression_list"
+        res = requests.get(url, headers=headers, timeout=10, verify=False)
+        if res.status_code == 200:
+            data = res.json()
+            found_url = deep_search_suppression_url(data)
+            if found_url:
+                return found_url
+            
+            # محاولة أخرى لاستخراج ID ضمني من النتيجة
+            rel = data.get("relationship", {})
+            if isinstance(rel, dict):
+                supp_obj = rel.get("suppression_list", {})
+                if isinstance(supp_obj, dict):
+                    extracted_supp_id = supp_obj.get("network_suppression_list_id") or supp_obj.get("suppression_list_id")
+                    if extracted_supp_id:
+                        return fetch_suppression_url_by_id(extracted_supp_id, headers)
+    except Exception:
+        pass
+    return ""
+
 def fetch_file_content(url):
-    """تنزيل محتوى الملف بأمان وتفادي خطأ float"""
     if not url or not isinstance(url, str):
         raise ValueError("الرابط غير صالح")
 
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
     url_str = str(url).strip()
+    
     if "optizmo" in url_str.lower() and "/access/" in url_str.lower() and not url_str.endswith("/download"):
         if not url_str.endswith("/"):
             url_str += "/"
         url_str += "download"
 
-    res = requests.get(url_str, headers=headers, timeout=30, verify=False, allow_redirects=True)
+    res = requests.get(url_str, headers=headers, timeout=35, verify=False, allow_redirects=True)
     res.raise_for_status()
     return res.content
 
@@ -162,7 +195,7 @@ def fetch_and_extract_emails_from_offer(offer_row, headers_used):
     dl_url = offer_row.get("Direct_URL")
     
     if not dl_url or not isinstance(dl_url, str) or dl_url.strip() == "":
-        dl_url = fetch_single_offer_url(offer_row["Offer ID"], headers_used)
+        dl_url = fetch_single_offer_url(offer_row["Offer ID"], offer_row.get("Suppression ID"), headers_used)
 
     if dl_url and isinstance(dl_url, str) and dl_url.startswith("http"):
         try:
@@ -228,6 +261,15 @@ if scan_submitted:
 
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
+                        
+                        # التثبت من ID داخل relationship
+                        if not supp_id or str(supp_id) == "0":
+                            rel = offer.get("relationship", {})
+                            if isinstance(rel, dict):
+                                supp_obj = rel.get("suppression_list", {})
+                                if isinstance(supp_obj, dict):
+                                    supp_id = supp_obj.get("network_suppression_list_id") or supp_obj.get("suppression_list_id", 0)
+
                         dl_url = deep_search_suppression_url(offer)
 
                         if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
@@ -318,7 +360,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             
             dl_url = row.get("Direct_URL")
             if not dl_url or not isinstance(dl_url, str) or dl_url.strip() == "":
-                dl_url = fetch_single_offer_url(row["Offer ID"], headers_used)
+                dl_url = fetch_single_offer_url(row["Offer ID"], row.get("Suppression ID"), headers_used)
 
             if dl_url and isinstance(dl_url, str) and dl_url.startswith("http"):
                 try:
