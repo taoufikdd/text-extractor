@@ -7,7 +7,7 @@ import io
 import os
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
-    """جلب جميع العروض"""
+    """جلب جميع العروض مع التفاصيل الكاملة بما فيها روابط suppression الخفية"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -68,57 +68,58 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
     return all_offers, headers
 
-def get_everflow_optout_download_link(network_offer_id, supp_id, headers):
-    """جلب رابط التحميل الأصلي"""
-    try:
-        optout_url = f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}/optout"
-        resp = requests.get(optout_url, headers=headers, timeout=15, verify=False)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            dl_url = data.get("download_url") or data.get("opt_out_list_url") or data.get("url") or data.get("file_url")
-            filename = data.get("filename") or data.get("name")
-            if dl_url:
-                if not filename:
-                    filename = dl_url.split("?")[0].split("/")[-1]
-                return dl_url, filename, None
+def extract_suppression_url_from_offer_obj(offer):
+    """استخراج رابط AWS S3 المباشر من بيانات العرض نفسها بدون 404"""
+    urls = []
+    
+    # 1. البحث فـ relationship
+    rel = offer.get("relationship", {})
+    if isinstance(rel, dict):
+        supp = rel.get("suppression_list", {}) or rel.get("suppression", {})
+        if isinstance(supp, dict):
+            for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
+                if supp.get(k) and str(supp.get(k)).startswith("http"):
+                    urls.append(supp.get(k))
 
-        if supp_id and str(supp_id) != "0":
-            supp_url = f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}/download"
-            resp_supp = requests.get(supp_url, headers=headers, timeout=15, verify=False)
-            if resp_supp.status_code == 200:
-                data = resp_supp.json()
-                dl_url = data.get("download_url") or data.get("url")
-                if dl_url:
-                    filename = data.get("filename") or dl_url.split("?")[0].split("/")[-1]
-                    return dl_url, filename, None
+    # 2. البحث فـ الجذر الرئيسي للـ Offer
+    supp_main = offer.get("suppression_list", {}) or offer.get("suppression", {})
+    if isinstance(supp_main, dict):
+        for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
+            if supp_main.get(k) and str(supp_main.get(k)).startswith("http"):
+                urls.append(supp_main.get(k))
 
-        return None, None, f"HTTP {resp.status_code}"
-    except Exception as e:
-        return None, None, str(e)
+    # 3. البحث في الحقول النصية المباشرة
+    for k in ["suppression_download_url", "suppression_file_url", "suppression_url", "unsubscribe_url", "optout_url"]:
+        val = offer.get(k)
+        if val and isinstance(val, str) and val.startswith("http"):
+            urls.append(val)
 
-def extract_txt_files_from_zip_bytes(zip_bytes):
-    """استخراج الملفات النصية المباشرة (.txt / .csv) من الأرشيف وسحب محتواها"""
+    if urls:
+        return urls[0]
+    return None
+
+def download_and_unpack_zip(url):
+    """تحميل الأرشيف وتفكيكه فـ الـ Memory لاستخراج ملفات txt مباشرة"""
     extracted_files = {}
+    res = requests.get(url, timeout=120, verify=False)
+    res.raise_for_status()
+    
+    # محاولة فك الضغط إذا كان zip
     try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        with zipfile.ZipFile(io.BytesIO(res.content)) as z:
             for zip_info in z.infolist():
                 if zip_info.is_dir():
                     continue
-                # البحث عن الملفات النصية أو ملفات الـ suppression داخل المجلدات
                 fname = os.path.basename(zip_info.filename)
                 if fname and not fname.startswith('.'):
                     file_content = z.read(zip_info.filename)
                     extracted_files[fname] = file_content
-    except Exception as e:
-        pass
+    except Exception:
+        # إذا لم يكن ZIP، إرجاع الملف كما هو
+        fname = url.split("?")[0].split("/")[-1] or "suppression_file.txt"
+        extracted_files[fname] = res.content
+        
     return extracted_files
-
-def download_file_bytes(url):
-    """تحميل الملف من S3"""
-    res = requests.get(url, timeout=120, verify=False)
-    res.raise_for_status()
-    return res.content
 
 # --- UI Setup ---
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
@@ -144,7 +145,7 @@ if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("المرجو إدخال البيانات المطلوبة.")
     else:
-        with st.spinner("جاري فحص العروض..."):
+        with st.spinner("جاري فحص جميع العروض واكتشاف روابط Suppression..."):
             try:
                 offers_list, headers_used = fetch_all_offers_everflow(api_url, auth_method, api_key, custom_header_name)
 
@@ -168,8 +169,11 @@ if scan_submitted:
 
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
+                        
+                        # استخراج الرابط الحقيقي المباشر
+                        dl_url = extract_suppression_url_from_offer_obj(offer)
 
-                        if has_supp or (supp_id and str(supp_id) != "0"):
+                        if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
                             has_suppression = "Yes"
                         else:
                             has_suppression = "No"
@@ -181,7 +185,9 @@ if scan_submitted:
                             "Status": str(offer_status),
                             "GEO": geo_info,
                             "Suppression Found": has_suppression,
-                            "Suppression ID": str(supp_id)
+                            "Suppression ID": str(supp_id),
+                            "Direct_URL": dl_url,
+                            "Raw_Offer_Data": offer
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
@@ -190,50 +196,51 @@ if scan_submitted:
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# عرض أزرار التحميل المباشر لملفات TXT المقتطعة
+# عرض أزرار التحميل
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
 
-    st.dataframe(df, use_container_width=True)
+    # عرض جدول العروض العام
+    display_df = df.drop(columns=["Direct_URL", "Raw_Offer_Data"], errors="ignore")
+    st.dataframe(display_df, use_container_width=True)
 
     supp_df = df[df["Suppression Found"] == "Yes"]
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("📄 استخراج ملفات الـ TXT المباشرة (Unpacked Files)")
+        st.subheader("📄 استخراج وتحميل ملفات TXT مباشرة (Unpacked)")
         
         for idx, row in supp_df.iterrows():
-            st.markdown(f"### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}`)")
+            st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
-            dl_url, exact_filename, err = get_everflow_optout_download_link(row["Offer ID"], row["Suppression ID"], headers_used)
-            
+            dl_url = row.get("Direct_URL")
+            offer_obj = row.get("Raw_Offer_Data", {})
+
+            # إذا لم يجد الرابط المباشر في الكائن، يحاول تجربة الـ API الخاصة بالـ optout برقم العرض
+            if not dl_url:
+                try:
+                    opt_res = requests.get(f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}/optout", headers=headers_used, timeout=10, verify=False)
+                    if opt_res.status_code == 200:
+                        opt_data = opt_res.json()
+                        dl_url = opt_data.get("download_url") or opt_data.get("url")
+                except Exception:
+                    pass
+
             if dl_url:
                 try:
-                    with st.spinner(f"جاري تحضير وتفكيك الملف لـ {row['Offer Name']}..."):
-                        zip_bytes = download_file_bytes(dl_url)
-                        extracted_files = extract_txt_files_from_zip_bytes(zip_bytes)
-
-                    if extracted_files:
-                        cols = st.columns(min(len(extracted_files), 4))
-                        c_idx = 0
-                        for fname, content_bytes in extracted_files.items():
-                            col = cols[c_idx % len(cols)]
-                            col.download_button(
-                                label=f"📄 {fname}",
-                                data=content_bytes,
-                                file_name=fname,
-                                key=f"dl_txt_{row['Offer ID']}_{c_idx}_{idx}"
-                            )
-                            c_idx += 1
-                    else:
-                        # إذا لم يكن ملف zip حقيقي، تنزيل الملف كما هو
-                        st.download_button(
-                            label=f"⬇️ {exact_filename}",
-                            data=zip_bytes,
-                            file_name=exact_filename,
-                            key=f"dl_raw_{row['Offer ID']}_{idx}"
+                    files_dict = download_and_unpack_zip(dl_url)
+                    cols = st.columns(min(len(files_dict), 4))
+                    c_idx = 0
+                    for fname, content in files_dict.items():
+                        col = cols[c_idx % len(cols)]
+                        col.download_button(
+                            label=f"📄 {fname}",
+                            data=content,
+                            file_name=fname,
+                            key=f"dl_txt_file_{row['Offer ID']}_{c_idx}_{idx}"
                         )
+                        c_idx += 1
                 except Exception as ex:
-                    st.error(f"خطأ فـ معالجة الملف: {str(ex)}")
+                    st.error(f"خطأ أثناء استخراج الملف: {str(ex)}")
             else:
-                st.warning(f"غير متوفر ({err if err else 'N/A'})")
+                st.warning("الرابط المباشر للملف غائب في استجابة السبونسر لهاد العرض (يتطلب طلب يدوي من الداشبورد)")
