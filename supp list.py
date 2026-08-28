@@ -60,20 +60,19 @@ def extract_field_by_candidates(offer, candidates, default="N/A"):
                         return str(val[sub_k])
     return default
 
-def fetch_api_data(url, auth_method, api_key, custom_header_name):
+def fetch_all_offers_paginated(base_url, auth_method, api_key, custom_header_name):
+    """جلب جميع العروض عبر جميع الصفحات تلقائياً"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
     }
     
-    clean_url = url.strip()
+    clean_url = base_url.strip()
     
-    # إصلاح تلقائي لإعدادات Everflow
+    # إصلاح رابط Everflow إذا لزم الأمر
     if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
         if "/v1/affiliates/offers" in clean_url and "/alloffers" not in clean_url:
             clean_url = clean_url.replace("/v1/affiliates/offers", "/v1/affiliates/alloffers")
-        if "?" not in clean_url:
-            clean_url += "?page=1&page_size=100"
         if custom_header_name.lower() == "x-eflow-api-key":
             custom_header_name = "X-Eflow-Api-Key"
 
@@ -86,16 +85,45 @@ def fetch_api_data(url, auth_method, api_key, custom_header_name):
     elif auth_method == "Custom Header" and custom_header_name:
         headers[custom_header_name.strip()] = api_key.strip()
 
-    response = requests.get(clean_url, headers=headers, timeout=30, verify=False)
-    
-    if response.status_code != 200:
-        error_msg = response.text[:300] if response.text else "No error body"
-        raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {error_msg}")
+    all_offers = []
+    page = 1
+    page_size = 500  # طلب الحد الأقصى للمزيد من السرعة
+
+    # تنظيف الرابط من أي page قديمة
+    base_endpoint = clean_url.split("?")[0]
+
+    while True:
+        paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
         
-    try:
-        return response.json()
-    except Exception:
-        raise Exception("فشل تحويل الاستجابة إلى JSON.")
+        response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+        
+        if response.status_code != 200:
+            if page == 1:
+                error_msg = response.text[:300] if response.text else "No error body"
+                raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {error_msg}")
+            else:
+                break # التوقف إذا وصلنا لنهاية الصفحات
+
+        json_data = response.json()
+        offers_chunk = find_offers_list(json_data)
+
+        if not offers_chunk:
+            break
+
+        all_offers.extend(offers_chunk)
+
+        # التحقق من إجمالي الصفحات من Everflow إذا كان متوفراً
+        total_count = json_data.get("paging", {}).get("total_count", 0)
+        if total_count and len(all_offers) >= total_count:
+            break
+
+        # إذا كان عدد العروض المسترجعة أقل من page_size فهذا يعني أنها الصفحة الأخيرة
+        if len(offers_chunk) < page_size:
+            break
+
+        page += 1
+
+    return all_offers
 
 def download_suppression_file(url):
     resp = requests.get(url, timeout=30, verify=False)
@@ -111,7 +139,7 @@ with st.sidebar:
     sponsor_name = st.text_input("Sponsor Name", value="XI Leads")
     api_url = st.text_input(
         "API Endpoint URL", 
-        value="https://api.eflow.team/v1/affiliates/alloffers?page=1&page_size=100"
+        value="https://api.eflow.team/v1/affiliates/alloffers"
     )
     auth_method = st.selectbox("Authentication Method", ["Custom Header", "Bearer Token", "X-API-Key", "API-Key", "No Authentication"])
     
@@ -129,13 +157,12 @@ if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("المرجو إدخال كل البيانات المطلوبة.")
     else:
-        with st.spinner("جاري جلب العروض وفحص ملفات Suppression..."):
+        with st.spinner("جاري جلب جميع العروض بجميع الصفحات وفحص ملفات Suppression..."):
             try:
-                json_data = fetch_api_data(api_url, auth_method, api_key, custom_header_name)
-                offers_list = find_offers_list(json_data)
+                offers_list = fetch_all_offers_paginated(api_url, auth_method, api_key, custom_header_name)
 
                 if not offers_list:
-                    st.warning("تم الاتصال بنجاح، لكن لم يتم العثور على عروض فـ JSON.")
+                    st.warning("تم الاتصال بنجاح، لكن لم يتم العثور على عروض.")
                 else:
                     processed_records = []
                     for offer in offers_list:
@@ -169,10 +196,27 @@ if scan_submitted:
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
-                    st.success(f"تم فحص {len(processed_records)} عرض بنجاح!")
+                    st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
+# Display Results
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
+    
+    st.subheader("الإحصائيات الإجمالية")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("إجمالي العروض", len(df))
+    col2.metric("Suppression متوفر", len(df[df["Suppression Found"] == "Yes"]))
+    col3.metric("Suppression غير متوفر", len(df[df["Suppression Found"] == "No"]))
+
+    st.markdown("---")
     st.dataframe(df, use_container_width=True)
+
+    csv_data = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 تحميل جميع العروض (CSV)",
+        data=csv_data,
+        file_name="all_suppression_results.csv",
+        mime="text/csv"
+    )
