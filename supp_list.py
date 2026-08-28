@@ -78,7 +78,7 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
 def deep_search_suppression_url(obj):
     if not obj:
-        return None
+        return ""
     try:
         str_obj = json.dumps(obj)
     except Exception:
@@ -95,14 +95,14 @@ def deep_search_suppression_url(obj):
     for pat in patterns:
         matches = re.findall(pat, str_obj, re.IGNORECASE)
         if matches:
-            return matches[0]
+            return str(matches[0])
 
     if isinstance(obj, dict):
         email_sec = obj.get("email_instructions") or obj.get("email") or {}
         if isinstance(email_sec, dict):
             for k in ["suppression_link", "unsubscribe_link", "optout_link", "suppression_download_url"]:
                 if email_sec.get(k):
-                    return email_sec.get(k)
+                    return str(email_sec.get(k))
                     
         rel = obj.get("relationship", {})
         if isinstance(rel, dict):
@@ -110,35 +110,39 @@ def deep_search_suppression_url(obj):
             if isinstance(supp, dict):
                 for k in ["download_url", "file_url", "url", "opt_out_url", "unsubscribe_url"]:
                     if supp.get(k):
-                        return supp.get(k)
+                        return str(supp.get(k))
 
-    return None
+    return ""
 
 def fetch_single_offer_url(offer_id, headers):
-    """جلب تفاصيل عرض واحد باستخراج رابط التنزيل المباشر"""
+    """جلب تفاصيل عرض واحد مع التوصيل بـ relationship=suppression_list"""
     try:
-        url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}"
+        url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}?relationship=suppression_list"
         res = requests.get(url, headers=headers, timeout=10, verify=False)
         if res.status_code == 200:
             return deep_search_suppression_url(res.json())
     except Exception:
         pass
-    return None
+    return ""
 
 def fetch_file_content(url):
-    """تنزيل محتوى الملف من السيرفر"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
-        if not url.endswith("/"):
-            url += "/"
-        url += "download"
+    """تنزيل محتوى الملف بأمان وتفادي خطأ float"""
+    if not url or not isinstance(url, str):
+        raise ValueError("الرابط غير صالح")
 
-    res = requests.get(url, headers=headers, timeout=30, verify=False, allow_redirects=True)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    url_str = str(url).strip()
+    if "optizmo" in url_str.lower() and "/access/" in url_str.lower() and not url_str.endswith("/download"):
+        if not url_str.endswith("/"):
+            url_str += "/"
+        url_str += "download"
+
+    res = requests.get(url_str, headers=headers, timeout=30, verify=False, allow_redirects=True)
     res.raise_for_status()
     return res.content
 
 def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.txt"):
-    """استخراج الملفات النصية أو فك ضغط ZIP"""
     extracted_files = {}
     try:
         with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
@@ -154,14 +158,13 @@ def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.t
     return extracted_files
 
 def fetch_and_extract_emails_from_offer(offer_row, headers_used):
-    """تنزيل واستخراج الإيميلات من عرض معين"""
     emails = set()
     dl_url = offer_row.get("Direct_URL")
     
-    if not dl_url:
+    if not dl_url or not isinstance(dl_url, str) or dl_url.strip() == "":
         dl_url = fetch_single_offer_url(offer_row["Offer ID"], headers_used)
 
-    if dl_url:
+    if dl_url and isinstance(dl_url, str) and dl_url.startswith("http"):
         try:
             content_bytes = fetch_file_content(dl_url)
             files_dict = extract_raw_files_from_bytes(content_bytes)
@@ -240,7 +243,7 @@ if scan_submitted:
                             "GEO": geo_info,
                             "Suppression Found": has_suppression,
                             "Suppression ID": str(supp_id),
-                            "Direct_URL": dl_url
+                            "Direct_URL": dl_url if dl_url else ""
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
@@ -276,7 +279,6 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             rows_list = supp_df.to_dict('records')
 
-            # استخدام Multi-threading لقراءة وتنزيل العروض بالتوازي
             with ThreadPoolExecutor(max_workers=10) as executor:
                 future_to_offer = {executor.submit(fetch_and_extract_emails_from_offer, row, headers_used): row for row in rows_list}
                 
@@ -315,10 +317,10 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
             dl_url = row.get("Direct_URL")
-            if not dl_url:
+            if not dl_url or not isinstance(dl_url, str) or dl_url.strip() == "":
                 dl_url = fetch_single_offer_url(row["Offer ID"], headers_used)
 
-            if dl_url:
+            if dl_url and isinstance(dl_url, str) and dl_url.startswith("http"):
                 try:
                     raw_bytes = fetch_file_content(dl_url)
                     files_dict = extract_raw_files_from_bytes(raw_bytes)
