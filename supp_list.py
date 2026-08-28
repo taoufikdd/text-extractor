@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # تعطيل تحذيرات SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Affiliate Suppression List Merger", page_icon="🛡️", layout="wide")
 
 def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
     headers = {
@@ -114,37 +114,68 @@ def deep_search_suppression_url(obj):
 
     return None
 
-def fetch_and_extract_emails_single_url(dl_url):
-    """تحميل واستخراج الإيميلات من رابط واحد بأسرع وقت"""
-    emails = set()
+def fetch_single_offer_url(offer_id, headers):
+    """جلب تفاصيل عرض واحد باستخراج رابط التنزيل المباشر"""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        if "optizmo" in dl_url.lower() and "/access/" in dl_url.lower() and not dl_url.endswith("/download"):
-            if not dl_url.endswith("/"):
-                dl_url += "/"
-            dl_url += "download"
-
-        res = requests.get(dl_url, headers=headers, timeout=25, verify=False, allow_redirects=True)
+        url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}"
+        res = requests.get(url, headers=headers, timeout=10, verify=False)
         if res.status_code == 200:
-            content_bytes = res.content
-            # فك ZIP إذا كان ZIP
-            try:
-                with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
-                    for zip_info in z.infolist():
-                        if zip_info.is_dir():
-                            continue
-                        fname = os.path.basename(zip_info.filename)
-                        if fname and not fname.startswith('.'):
-                            raw_data = z.read(zip_info.filename)
-                            text_str = raw_data.decode('utf-8', errors='ignore')
-                            found = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_str)
-                            emails.update([e.lower().strip() for e in found])
-            except Exception:
-                text_str = content_bytes.decode('utf-8', errors='ignore')
-                found = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_str)
-                emails.update([e.lower().strip() for e in found])
+            return deep_search_suppression_url(res.json())
     except Exception:
         pass
+    return None
+
+def fetch_file_content(url):
+    """تنزيل محتوى الملف من السيرفر"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
+        if not url.endswith("/"):
+            url += "/"
+        url += "download"
+
+    res = requests.get(url, headers=headers, timeout=30, verify=False, allow_redirects=True)
+    res.raise_for_status()
+    return res.content
+
+def extract_raw_files_from_bytes(content_bytes, default_name="suppression_list.txt"):
+    """استخراج الملفات النصية أو فك ضغط ZIP"""
+    extracted_files = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(content_bytes)) as z:
+            for zip_info in z.infolist():
+                if zip_info.is_dir():
+                    continue
+                fname = os.path.basename(zip_info.filename)
+                if fname and not fname.startswith('.'):
+                    extracted_files[fname] = z.read(zip_info.filename)
+    except Exception:
+        extracted_files[default_name] = content_bytes
+        
+    return extracted_files
+
+def fetch_and_extract_emails_from_offer(offer_row, headers_used):
+    """تنزيل واستخراج الإيميلات من عرض معين"""
+    emails = set()
+    dl_url = offer_row.get("Direct_URL")
+    
+    if not dl_url:
+        dl_url = fetch_single_offer_url(offer_row["Offer ID"], headers_used)
+
+    if dl_url:
+        try:
+            content_bytes = fetch_file_content(dl_url)
+            files_dict = extract_raw_files_from_bytes(content_bytes)
+            for fname, file_raw in files_dict.items():
+                try:
+                    text_str = file_raw.decode('utf-8', errors='ignore')
+                except Exception:
+                    text_str = str(file_raw)
+
+                found = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_str)
+                if found:
+                    emails.update([e.lower().strip() for e in found])
+        except Exception:
+            pass
     return emails
 
 # --- UI Interface ---
@@ -213,44 +244,46 @@ if scan_submitted:
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
+                    st.session_state["headers_used"] = headers_used
                     st.session_state["sponsor_name"] = sponsor_name
                     st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# Display Results & Processing
+# Display Results & Actions
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
+    headers_used = st.session_state.get("headers_used", {})
     s_name = st.session_state.get("sponsor_name", "Sponsor")
 
     display_df = df.drop(columns=["Direct_URL"], errors="ignore")
     st.dataframe(display_df, use_container_width=True)
 
-    supp_df = df[(df["Suppression Found"] == "Yes") & (df["Direct_URL"].notna()) & (df["Direct_URL"] != "")]
+    supp_df = df[df["Suppression Found"] == "Yes"]
     
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ دمج سريع جداً مع حذف التكرار (Multi-Threaded)")
-        
-        urls_to_download = supp_df["Direct_URL"].dropna().unique().tolist()
-        st.write(f"📊 عدد روابط التحميل المباشرة المجهزة للدمج: **{len(urls_to_download)} رابط**.")
+        st.subheader("⚡ دمج سريع وتنقية جميع ملفات الـ Suppression")
+        st.info(f"تم إيجاد {len(supp_df)} عرض يحتوي على ملفات Suppression. اضغط على الزر للدمج والتنقية الفورية.")
 
         if st.button("🚀 Fast Merge & Clean All Suppressions", type="primary", use_container_width=True):
             all_unique_emails = set()
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            total_urls = len(urls_to_download)
+            total_offers = len(supp_df)
             completed = 0
 
-            # استخدام Multi-threading للتحميل بسرعة فائقة (10 مسارات فـ نفس الوقت)
+            rows_list = supp_df.to_dict('records')
+
+            # استخدام Multi-threading لقراءة وتنزيل العروض بالتوازي
             with ThreadPoolExecutor(max_workers=10) as executor:
-                future_to_url = {executor.submit(fetch_and_extract_emails_single_url, url): url for url in urls_to_download}
+                future_to_offer = {executor.submit(fetch_and_extract_emails_from_offer, row, headers_used): row for row in rows_list}
                 
-                for future in as_completed(future_to_url):
+                for future in as_completed(future_to_offer):
                     completed += 1
-                    status_text.text(f"جاري التحميل والمعالجة بالتوازي: ({completed}/{total_urls})...")
-                    progress_bar.progress(completed / total_urls)
+                    status_text.text(f"جاري معالجة العروض بالتوازي: ({completed}/{total_offers})...")
+                    progress_bar.progress(completed / total_offers)
                     
                     try:
                         extracted = future.result()
@@ -263,7 +296,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if all_unique_emails:
                 cleaned_content = "\n".join(sorted(all_unique_emails))
-                st.success(f"⚡ اكتملت العملية فـ ثواني! تم استخراج {len(all_unique_emails):,} إيميل فريد بدون أي تكرار.")
+                st.success(f"⚡ اكتملت العملية بنجاح! تم استخراج {len(all_unique_emails):,} إيميل فريد بدون أي تكرار.")
 
                 st.download_button(
                     label=f"💾 تحميل ملف الإيميلات المدمج النهائي ({len(all_unique_emails):,} Emails)",
@@ -274,3 +307,34 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 )
             else:
                 st.warning("لم يتم العثور على إيميلات فـ الملفات المفحوصة.")
+
+        st.markdown("---")
+        st.subheader("📄 التحميل الفردي للملفات (Unpacked)")
+        
+        for idx, row in supp_df.iterrows():
+            st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
+            
+            dl_url = row.get("Direct_URL")
+            if not dl_url:
+                dl_url = fetch_single_offer_url(row["Offer ID"], headers_used)
+
+            if dl_url:
+                try:
+                    raw_bytes = fetch_file_content(dl_url)
+                    files_dict = extract_raw_files_from_bytes(raw_bytes)
+                    
+                    cols = st.columns(min(max(len(files_dict), 1), 4))
+                    c_idx = 0
+                    for fname, content in files_dict.items():
+                        col = cols[c_idx % len(cols)]
+                        col.download_button(
+                            label=f"📄 {fname}",
+                            data=content,
+                            file_name=fname,
+                            key=f"dl_btn_{row['Offer ID']}_{c_idx}_{idx}"
+                        )
+                        c_idx += 1
+                except Exception as ex:
+                    st.error(f"خطأ أثناء جلب الملف: {str(ex)}")
+            else:
+                st.warning("لا يوجد رابط تحميل مباشر متوفر لهذا العرض.")
