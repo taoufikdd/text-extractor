@@ -69,60 +69,78 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
 
     return all_offers, headers
 
-def extract_url_from_dict(d):
-    """بحث ذكي داخل أي Dictionary عن روابط التحميل"""
+def extract_file_info_from_dict(d):
+    """بحث ذكي داخل تفاصيل العرض عن رابط التحميل والاسم الحقيقي للملف"""
     if not isinstance(d, dict):
-        return None
+        return None, None
     
-    # الروابط المباشرة المحتملة فـ Everflow
+    download_url = None
+    filename = None
+    
+    # البحث عن الروابط
     for key in ["download_url", "suppression_url", "url", "file_url", "suppression_file_url", "link"]:
         if key in d and isinstance(d[key], str) and d[key].startswith("http"):
-            return d[key]
+            download_url = d[key]
+            break
             
+    # البحث عن اسم الملف الحقيقي
+    for key in ["filename", "file_name", "original_filename", "suppression_file_name", "name"]:
+        if key in d and isinstance(d[key], str) and (".zip" in d[key] or ".txt" in d[key] or "suppression" in d[key].lower()):
+            filename = d[key]
+            break
+
+    if download_url and filename:
+        return download_url, filename
+
+    # تفتيش عميق داخل الـ dictionaries الفرعية
     for k, v in d.items():
         if isinstance(v, dict):
-            res = extract_url_from_dict(v)
-            if res:
-                return res
+            sub_url, sub_name = extract_file_info_from_dict(v)
+            if sub_url and not download_url:
+                download_url = sub_url
+            if sub_name and not filename:
+                filename = sub_name
         elif isinstance(v, list):
             for item in v:
                 if isinstance(item, dict):
-                    res = extract_url_from_dict(item)
-                    if res:
-                        return res
-    return None
+                    sub_url, sub_name = extract_file_info_from_dict(item)
+                    if sub_url and not download_url:
+                        download_url = sub_url
+                    if sub_name and not filename:
+                        filename = sub_name
+                        
+    return download_url, filename
 
-def get_everflow_suppression_link(network_offer_id, headers):
-    """جلب تفاصيل العرض الفردي واستخراج رابط الـ Suppression منه"""
+def get_everflow_suppression_details(network_offer_id, headers):
+    """جلب تفاصيل العرض لاستخراج الرابط واسم الملف الأصلي"""
     try:
         url = f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}"
         resp = requests.get(url, headers=headers, timeout=15, verify=False)
         if resp.status_code == 200:
             data = resp.json()
-            download_link = extract_url_from_dict(data)
-            if download_link:
-                return download_link, None
-            return None, "الرابط غير موجود فـ تفاصيل العرض"
+            dl_url, fname = extract_file_info_from_dict(data)
+            
+            # إذا ظهر الرابط ولكن اسم الملف لم يُستخرج، نستخرجه من رابط S3 أو نولده
+            if dl_url and not fname:
+                parts = dl_url.split("?")[0].split("/")
+                for p in parts:
+                    if "." in p:
+                        fname = p
+                        break
+            if not fname:
+                fname = f"suppression_list_{network_offer_id}.zip"
+                
+            return dl_url, fname, None
         else:
-            return None, f"HTTP {resp.status_code}"
+            return None, None, f"HTTP {resp.status_code}"
     except Exception as e:
-        return None, str(e)
+        return None, None, str(e)
 
 def download_file_from_url(url):
-    """تحميل الملف المباشر من رابط S3 / AWS"""
+    """تحميل الملف من رابط S3 المباشر"""
     resp = requests.get(url, timeout=60, verify=False)
     resp.raise_for_status()
-    
-    disposition = resp.headers.get('Content-Disposition', '')
-    filename = "suppression_list.zip"
-    if 'filename=' in disposition:
-        filename = disposition.split('filename=')[-1].strip('"\'')
-    else:
-        url_filename = url.split("?")[0].split("/")[-1]
-        if url_filename and "." in url_filename:
-            filename = url_filename
-            
-    return resp.content, filename
+    return resp.content
 
 # --- UI Setup ---
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
@@ -219,29 +237,29 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
         mime="text/csv"
     )
 
-    # قائمة التحميل المباشرة
+    # قائمة التحميل المباشرة بأسماء الملفات الأصلية
     supp_df = df[df["Suppression Found"] == "Yes"]
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("📥 تحميل ملفات الـ Suppression مباشرة")
+        st.subheader("📥 تحميل ملفات الـ Suppression بأسماءها الأصلية")
         
         for idx, row in supp_df.iterrows():
             d_col1, d_col2 = st.columns([3, 1])
             d_col1.write(f"**[{row['Status']}] {row['Offer Name']}** (Offer ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
-            # جلب رابط التحميل الفعلي من تفاصيل العرض
-            download_url, err = get_everflow_suppression_link(row["Offer ID"], headers_used)
+            # جلب الرابط واسم الملف الأصلي
+            download_url, original_filename, err = get_everflow_suppression_details(row["Offer ID"], headers_used)
             
             if download_url:
                 try:
-                    file_bytes, fname = download_file_from_url(download_url)
+                    file_bytes = download_file_from_url(download_url)
                     d_col2.download_button(
-                        label=f"⬇️ تحميل {fname}",
+                        label=f"⬇️ {original_filename}",
                         data=file_bytes,
-                        file_name=f"Offer_{row['Offer ID']}_{fname}",
+                        file_name=original_filename,
                         key=f"dl_btn_{row['Offer ID']}_{idx}"
                     )
                 except Exception as ex:
-                    d_col2.error(f"فشل تنزيل الملف: {str(ex)[:30]}")
+                    d_col2.error(f"فشل التحميل: {str(ex)[:30]}")
             else:
                 d_col2.warning(f"غير متوفر ({err if err else 'N/A'})")
