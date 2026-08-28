@@ -1,67 +1,10 @@
 import streamlit as st
 import requests
 import pandas as pd
+import json
 
-# Suppression keywords
-SUPPRESSION_KEYWORDS = [
-    "suppression", "suppression_file", "suppression_url", "suppression list",
-    "blacklist", "exclusion", "exclude", "optout", "opt_out", "do_not_contact", "dnc"
-]
-
-CONTAINER_KEYS = ["offers", "data", "results", "items", "campaigns", "response"]
-
-def find_offers_list(data):
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        for key in CONTAINER_KEYS:
-            if key in data and isinstance(data[key], list):
-                return data[key]
-            if key in data and isinstance(data[key], dict):
-                nested = find_offers_list(data[key])
-                if nested:
-                    return nested
-        for key, val in data.items():
-            if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                return val
-    return []
-
-def scan_suppression_recursive(item, prefix=""):
-    results = []
-    if isinstance(item, dict):
-        for k, v in item.items():
-            full_key = f"{prefix}.{k}" if prefix else k
-            k_lower = k.lower()
-            if any(kw in k_lower for kw in SUPPRESSION_KEYWORDS):
-                results.append((full_key, v))
-            if isinstance(v, (dict, list)):
-                results.extend(scan_suppression_recursive(v, full_key))
-    elif isinstance(item, list):
-        for idx, elem in enumerate(item):
-            full_key = f"{prefix}[{idx}]"
-            if isinstance(elem, (dict, list)):
-                results.extend(scan_suppression_recursive(elem, full_key))
-            elif isinstance(elem, str):
-                if any(kw in elem.lower() for kw in SUPPRESSION_KEYWORDS):
-                    results.append((full_key, elem))
-    return results
-
-def extract_field_by_candidates(offer, candidates, default="N/A"):
-    for candidate in candidates:
-        if candidate in offer and offer[candidate] is not None:
-            val = offer[candidate]
-            if isinstance(val, (str, int, float)):
-                return str(val)
-            if isinstance(val, list):
-                return ", ".join(map(str, val))
-            if isinstance(val, dict):
-                for sub_k in ["name", "code", "iso", "id", "display_name"]:
-                    if sub_k in val and val[sub_k]:
-                        return str(val[sub_k])
-    return default
-
-def fetch_all_offers_paginated(base_url, auth_method, api_key, custom_header_name):
-    """جلب جميع العروض عبر جميع الصفحات تلقائياً"""
+def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name):
+    """جلب جميع العروض (النشطة والموقوفة Paused) مع جميع الروابط الصفحة بصفحة"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
@@ -69,7 +12,6 @@ def fetch_all_offers_paginated(base_url, auth_method, api_key, custom_header_nam
     
     clean_url = base_url.strip()
     
-    # إصلاح رابط Everflow إذا لزم الأمر
     if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
         if "/v1/affiliates/offers" in clean_url and "/alloffers" not in clean_url:
             clean_url = clean_url.replace("/v1/affiliates/offers", "/v1/affiliates/alloffers")
@@ -87,48 +29,76 @@ def fetch_all_offers_paginated(base_url, auth_method, api_key, custom_header_nam
 
     all_offers = []
     page = 1
-    page_size = 500  # طلب الحد الأقصى للمزيد من السرعة
+    page_size = 500
 
-    # تنظيف الرابط من أي page قديمة
     base_endpoint = clean_url.split("?")[0]
 
     while True:
-        paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
+        # إضافة relationship=all لضمان جلب العروض الـ Paused والـ Private
+        paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}&relationship=all&offer_status=all"
         
         response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
         
         if response.status_code != 200:
             if page == 1:
-                error_msg = response.text[:300] if response.text else "No error body"
-                raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {error_msg}")
+                # إذا فشل مع relationship=all نحاول التجربة بدونها
+                paginated_url = f"{base_endpoint}?page={page}&page_size={page_size}"
+                response = requests.get(paginated_url, headers=headers, timeout=30, verify=False)
+                if response.status_code != 200:
+                    raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {response.text[:200]}")
             else:
-                break # التوقف إذا وصلنا لنهاية الصفحات
+                break
 
         json_data = response.json()
-        offers_chunk = find_offers_list(json_data)
+        
+        # استخراج العروض
+        offers_chunk = []
+        if isinstance(json_data, list):
+            offers_chunk = json_data
+        elif isinstance(json_data, dict):
+            for k in ["offers", "data", "results", "items"]:
+                if k in json_data and isinstance(json_data[k], list):
+                    offers_chunk = json_data[k]
+                    break
 
         if not offers_chunk:
             break
 
         all_offers.extend(offers_chunk)
 
-        # التحقق من إجمالي الصفحات من Everflow إذا كان متوفراً
-        total_count = json_data.get("paging", {}).get("total_count", 0)
-        if total_count and len(all_offers) >= total_count:
-            break
-
-        # إذا كان عدد العروض المسترجعة أقل من page_size فهذا يعني أنها الصفحة الأخيرة
         if len(offers_chunk) < page_size:
             break
 
         page += 1
 
-    return all_offers
+    return all_offers, headers
 
-def download_suppression_file(url):
-    resp = requests.get(url, timeout=30, verify=False)
+def get_everflow_suppression_url(network_offer_id, suppression_list_id, headers):
+    """جلب رابط التحميل المباشر لملف Suppression من Everflow"""
+    # 1. التجربة الأولى: عبر API الخلاص بـ Suppression Details
+    try:
+        supp_api_url = f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}/suppression"
+        resp = requests.get(supp_api_url, headers=headers, timeout=10, verify=False)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, dict):
+                download_url = data.get("download_url") or data.get("url") or data.get("suppression_url")
+                if download_url:
+                    return download_url
+    except Exception:
+        pass
+
+    # 2. التجربة الثانية: بناء الرابط المستضيف لـ Everflow
+    if suppression_list_id and str(suppression_list_id) != "0":
+        return f"https://api.eflow.team/v1/affiliates/offers/{network_offer_id}/suppression/download"
+        
+    return None
+
+def download_file_from_url(url, headers=None):
+    """تحميل الملف سواء كان يتطلب هيدر أو رابط مباشر"""
+    resp = requests.get(url, headers=headers, timeout=30, verify=False)
     resp.raise_for_status()
-    return resp.content
+    return resp.content, resp.headers.get('content-disposition', '')
 
 # UI Setup
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
@@ -151,15 +121,15 @@ with st.sidebar:
     if auth_method != "No Authentication":
         api_key = st.text_input("API Key / Token", type="password")
 
-    scan_submitted = st.button("Scan Offers", use_container_width=True, type="primary")
+    scan_submitted = st.button("Scan All Offers (Active + Paused)", use_container_width=True, type="primary")
 
 if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
-        st.error("المرجو إدخال كل البيانات المطلوبة.")
+        st.error("المرجو إدخال البيانات المطلوبة.")
     else:
-        with st.spinner("جاري جلب جميع العروض بجميع الصفحات وفحص ملفات Suppression..."):
+        with st.spinner("جاري فحص جميع العروض (النشطة والموقوفة) واستخراج روابط التحميل..."):
             try:
-                offers_list = fetch_all_offers_paginated(api_url, auth_method, api_key, custom_header_name)
+                offers_list, headers_used = fetch_all_offers_everflow(api_url, auth_method, api_key, custom_header_name)
 
                 if not offers_list:
                     st.warning("تم الاتصال بنجاح، لكن لم يتم العثور على عروض.")
@@ -169,54 +139,94 @@ if scan_submitted:
                         if not isinstance(offer, dict):
                             continue
                         
-                        offer_id = extract_field_by_candidates(offer, ["network_offer_id", "offer_id", "id", "campaign_id"])
-                        offer_name = extract_field_by_candidates(offer, ["name", "title", "offer_name"])
-                        geo = extract_field_by_candidates(offer, ["geo", "countries", "country"])
+                        offer_id = offer.get("network_offer_id") or offer.get("offer_id") or offer.get("id", "N/A")
+                        offer_name = offer.get("name") or offer.get("title", "N/A")
+                        offer_status = offer.get("offer_status", "N/A")
 
-                        suppression_matches = scan_suppression_recursive(offer)
+                        # استخراج بيانات GEO
+                        geo_info = "N/A"
+                        if "relationship" in offer and isinstance(offer["relationship"], dict):
+                            geos = offer["relationship"].get("target_countries", [])
+                            if geos:
+                                geo_info = ", ".join([g.get("code", str(g)) if isinstance(g, dict) else str(g) for g in geos])
+
+                        # كشف الـ Suppression
+                        has_supp = offer.get("is_using_suppression_list", False)
+                        supp_id = offer.get("suppression_list_id", 0)
                         
-                        if suppression_matches:
-                            field_names = ", ".join([m[0] for m in suppression_matches])
-                            urls = [str(m[1]) for m in suppression_matches if isinstance(m[1], str) and m[1].startswith("http")]
-                            file_url = urls[0] if urls else "Found (No Direct URL)"
+                        direct_url = None
+                        if has_supp or (supp_id and supp_id != 0):
                             has_suppression = "Yes"
+                            direct_url = get_everflow_suppression_url(offer_id, supp_id, headers_used)
                         else:
-                            field_names = "None"
-                            file_url = "N/A"
                             has_suppression = "No"
 
                         processed_records.append({
                             "Sponsor": sponsor_name,
-                            "Offer ID": offer_id,
-                            "Offer Name": offer_name,
-                            "GEO": geo,
+                            "Offer ID": str(offer_id),
+                            "Offer Name": str(offer_name),
+                            "Status": str(offer_status),
+                            "GEO": geo_info,
                             "Suppression Found": has_suppression,
-                            "Suppression Field": field_names,
-                            "Suppression File URL": file_url
+                            "Suppression ID": str(supp_id),
+                            "Download URL": direct_url if direct_url else "N/A"
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
-                    st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض.")
+                    st.session_state["headers_used"] = headers_used
+                    st.success(f"تم فحص جميع العروض بنجاح! الإجمالي: {len(processed_records)} عرض (بما فيها Paused).")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# Display Results
+# عرض النتائج والأزرار
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
-    
-    st.subheader("الإحصائيات الإجمالية")
+    headers_used = st.session_state.get("headers_used", {})
+
+    st.subheader("الإحصائيات")
     col1, col2, col3 = st.columns(3)
-    col1.metric("إجمالي العروض", len(df))
-    col2.metric("Suppression متوفر", len(df[df["Suppression Found"] == "Yes"]))
-    col3.metric("Suppression غير متوفر", len(df[df["Suppression Found"] == "No"]))
+    col1.metric("إجمالي العروض المجلوبة", len(df))
+    col2.metric("عروض بـ Suppression", len(df[df["Suppression Found"] == "Yes"]))
+    col3.metric("عروض بدون Suppression", len(df[df["Suppression Found"] == "No"]))
 
     st.markdown("---")
     st.dataframe(df, use_container_width=True)
 
+    # زر تصدير CSV
     csv_data = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 تحميل جميع العروض (CSV)",
+        label="📥 تحميل الجدول الكامل كـ CSV",
         data=csv_data,
-        file_name="all_suppression_results.csv",
+        file_name="all_offers_with_suppression.csv",
         mime="text/csv"
     )
+
+    # قائمة التحميل المباشر لملفات Suppression
+    supp_df = df[df["Suppression Found"] == "Yes"]
+    if not supp_df.empty:
+        st.markdown("---")
+        st.subheader("📥 تحميل ملفات الـ Suppression مباشرة")
+        
+        for idx, row in supp_df.iterrows():
+            d_col1, d_col2 = st.columns([3, 1])
+            d_col1.write(f"**[{row['Status']}] {row['Offer Name']}** (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
+            
+            if row["Download URL"] != "N/A":
+                try:
+                    content, disposition = download_file_from_url(row["Download URL"], headers_used)
+                    
+                    # استخراج اسم الملف الاصلي مثل Suppression List.zip
+                    filename = f"Suppression_{row['Offer ID']}.zip"
+                    if "filename=" in disposition:
+                        filename = disposition.split("filename=")[-1].strip('"\'')
+                    
+                    d_col2.download_button(
+                        label=f"تحميل {filename}",
+                        data=content,
+                        file_name=filename,
+                        key=f"dl_btn_{row['Offer ID']}_{idx}"
+                    )
+                except Exception:
+                    d_col2.error("فشل التحميل التلقائي")
+            else:
+                d_col2.write("لا يوجد رابط مباشر")
