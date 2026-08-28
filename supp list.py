@@ -70,14 +70,12 @@ def fetch_all_offers_everflow(base_url, auth_method, api_key, custom_header_name
     return all_offers, headers
 
 def deep_search_suppression_url(obj):
-    """فحص عميق للـ JSON لاستخراج أي رابط تنزيل مباشر أو رابط Optizmo/UnsubCentral"""
+    """فحص عميق للـ JSON لاستخراج أي رابط تنزيل مباشر"""
     if not obj:
         return None
     
-    # 1. البحث النصي المباشر عبر regex فـ الـ JSON كاملا
     str_obj = json.dumps(obj)
     
-    # البحث عن روابط التحميل المباشرة لملفات zip أو txt أو روابط optizmo / unsubcentral
     patterns = [
         r'https?://[^\s"]+\.zip[^\s"]*',
         r'https?://[^\s"]*optizmo[^\s"]*',
@@ -91,7 +89,6 @@ def deep_search_suppression_url(obj):
         if matches:
             return matches[0]
 
-    # 2. فحص الخصائص المحددة فـ Everflow
     if isinstance(obj, dict):
         email_sec = obj.get("email_instructions") or obj.get("email") or {}
         if isinstance(email_sec, dict):
@@ -109,11 +106,10 @@ def deep_search_suppression_url(obj):
 
     return None
 
-def download_and_unpack_zip(url):
-    """تحميل الملف وتفكيك الأرشيف لاستخراج ملفات txt مباشرة"""
+def extract_raw_files_from_url(url):
+    """تنزيل وتفكيك الملف واستخراج محتوياته النصية"""
     extracted_files = {}
     
-    # تحويل روابط Optizmo للملف المباشر إن وجدت
     if "optizmo" in url.lower() and "/access/" in url.lower() and not url.endswith("/download"):
         if not url.endswith("/"):
             url += "/"
@@ -139,6 +135,11 @@ def download_and_unpack_zip(url):
         
     return extracted_files
 
+def extract_emails_only(text_content):
+    """استخراج الإيميلات فقط عبر Regex الحصري للإيميلات"""
+    email_pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
+    return re.findall(email_pattern, text_content)
+
 # --- UI Setup ---
 st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
 st.title("🛡️ Affiliate Suppression List Detector")
@@ -163,7 +164,7 @@ if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("المرجو إدخال البيانات المطلوبة.")
     else:
-        with st.spinner("جاري فحص جميع العروض واكتشاف الروابط العميقة للـ Suppression..."):
+        with st.spinner("جاري فحص جميع العروض..."):
             try:
                 offers_list, headers_used = fetch_all_offers_everflow(api_url, auth_method, api_key, custom_header_name)
 
@@ -188,7 +189,6 @@ if scan_submitted:
                         has_supp = offer.get("is_using_suppression_list", False)
                         supp_id = offer.get("suppression_list_id", 0)
                         
-                        # فحص عميق للرابط
                         dl_url = deep_search_suppression_url(offer)
 
                         if has_supp or (supp_id and str(supp_id) != "0") or dl_url:
@@ -214,7 +214,7 @@ if scan_submitted:
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# عرض أزرار التحميل
+# عرض أزرار التحميل المباشر والزر المجمع النهائي
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
@@ -225,14 +225,77 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     supp_df = df[df["Suppression Found"] == "Yes"]
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("📄 استخراج وتحميل ملفات TXT مباشرة (Unpacked)")
+        
+        # --- زر التحميل المجمع والتنقية الرهيب ---
+        st.subheader("⚡ دمج وتنقية جميع ملفات الـ Suppression")
+        st.info("هاد الزر كيدوز على كاع العروض، كينزل الملفات، كيعزل غير الإيميلات الصحيحة، وكيحيد التكرار 100%.")
+
+        if st.button("🚀 Process & Merge All Email Suppressions", type="primary", use_container_width=True):
+            unique_emails = set()
+            total_files_processed = 0
+
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            total_rows = len(supp_df)
+
+            for i, (_, row) in enumerate(supp_df.iterrows()):
+                status_text.text(f"جاري معالجة العرض ({i+1}/{total_rows}): {row['Offer Name']}...")
+                progress_bar.progress((i + 1) / total_rows)
+
+                dl_url = row.get("Direct_URL")
+                
+                if not dl_url:
+                    try:
+                        single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
+                        res_single = requests.get(single_url, headers=headers_used, timeout=10, verify=False)
+                        if res_single.status_code == 200:
+                            dl_url = deep_search_suppression_url(res_single.json())
+                    except Exception:
+                        pass
+
+                if dl_url:
+                    try:
+                        files_dict = extract_raw_files_from_url(dl_url)
+                        for fname, content_bytes in files_dict.items():
+                            try:
+                                text_str = content_bytes.decode('utf-8', errors='ignore')
+                            except Exception:
+                                text_str = str(content_bytes)
+
+                            # استخراج الإيميلات فقط بدون دومينات أو نصوص أخرى
+                            found_emails = extract_emails_only(text_str)
+                            if found_emails:
+                                # تحويلها لـ lowercase وحفظها فـ set لمنع التكرار
+                                unique_emails.update([e.lower().strip() for e in found_emails])
+                                total_files_processed += 1
+                    except Exception:
+                        pass
+
+            status_text.empty()
+            progress_bar.empty()
+
+            if unique_emails:
+                cleaned_content = "\n".join(sorted(unique_emails))
+                st.success(f"✅ تم النجاح! تم استخراج {len(unique_emails):,} إيميل فريد (Unique Emails) بدون تكرار من {total_files_processed} ملف.")
+
+                st.download_button(
+                    label=f"💾 تحميل ملف الإيميلات المدمج ({len(unique_emails):,} Emails)",
+                    data=cleaned_content,
+                    file_name=f"all_suppression_emails_cleaned_{sponsor_name.replace(' ', '_')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            else:
+                st.warning("لم يتم العثور على إيميلات فـ الملفات المفحوصة.")
+
+        st.markdown("---")
+        st.subheader("📄 التحميل الفردي للملفات (Unpacked)")
         
         for idx, row in supp_df.iterrows():
             st.markdown(f"#### 🔹 [{row['Status']}] {row['Offer Name']} (ID: `{row['Offer ID']}` | Supp ID: `{row['Suppression ID']}`)")
             
             dl_url = row.get("Direct_URL")
-            
-            # تجربة إضافية للاتصال بـ single offer API للحصول على تفاصيل أعمق إن لم يظهر الرابط
             if not dl_url:
                 try:
                     single_url = f"https://api.eflow.team/v1/affiliates/offers/{row['Offer ID']}"
@@ -244,7 +307,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             if dl_url:
                 try:
-                    files_dict = download_and_unpack_zip(dl_url)
+                    files_dict = extract_raw_files_from_url(dl_url)
                     cols = st.columns(min(len(files_dict), 4))
                     c_idx = 0
                     for fname, content in files_dict.items():
@@ -259,4 +322,4 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 except Exception as ex:
                     st.error(f"خطأ أثناء استخراج الملف: {str(ex)}")
             else:
-                st.warning("هذا العرض يستخدم نظام Suppression محمي أو يتطلب موافقة خاصة من السبونسر.")
+                st.warning("هذا العرض يتطلب طلب يدوي من الداشبورد أو لا يحتوي على رابط مباشر.")
