@@ -1,19 +1,16 @@
 import streamlit as st
 import requests
 import pandas as pd
-import json
 
-# الكلمات المفتاحية للبحث عن ملفات/روابط الإلغاء فـ JSON
+# Suppression keywords
 SUPPRESSION_KEYWORDS = [
     "suppression", "suppression_file", "suppression_url", "suppression list",
     "blacklist", "exclusion", "exclude", "optout", "opt_out", "do_not_contact", "dnc"
 ]
 
-# المفاتيح الشائعة التي تحتوي على مصفوفة العروض
 CONTAINER_KEYS = ["offers", "data", "results", "items", "campaigns", "response"]
 
 def find_offers_list(data):
-    """البحث الذكي عن قائمة العروض داخل الاستجابة"""
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
@@ -30,7 +27,6 @@ def find_offers_list(data):
     return []
 
 def scan_suppression_recursive(item, prefix=""):
-    """البحث التكراري عن حقول Suppression داخل العرض"""
     results = []
     if isinstance(item, dict):
         for k, v in item.items():
@@ -51,7 +47,6 @@ def scan_suppression_recursive(item, prefix=""):
     return results
 
 def extract_field_by_candidates(offer, candidates, default="N/A"):
-    """استخراج المعطيات الأساسية مثل ID و Name و GEO"""
     for candidate in candidates:
         if candidate in offer and offer[candidate] is not None:
             val = offer[candidate]
@@ -66,12 +61,22 @@ def extract_field_by_candidates(offer, candidates, default="N/A"):
     return default
 
 def fetch_api_data(url, auth_method, api_key, custom_header_name):
-    """الاتصال بـ API واستخراج البيانات بحماية ضد أخطاء SSL والـ Pagination"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json"
     }
     
+    clean_url = url.strip()
+    
+    # إصلاح تلقائي لإعدادات Everflow
+    if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
+        if "/v1/affiliates/offers" in clean_url and "/alloffers" not in clean_url:
+            clean_url = clean_url.replace("/v1/affiliates/offers", "/v1/affiliates/alloffers")
+        if "?" not in clean_url:
+            clean_url += "?page=1&page_size=100"
+        if custom_header_name.lower() == "x-eflow-api-key":
+            custom_header_name = "X-Eflow-Api-Key"
+
     if auth_method == "Bearer Token":
         headers["Authorization"] = f"Bearer {api_key}"
     elif auth_method == "X-API-Key":
@@ -81,61 +86,38 @@ def fetch_api_data(url, auth_method, api_key, custom_header_name):
     elif auth_method == "Custom Header" and custom_header_name:
         headers[custom_header_name.strip()] = api_key.strip()
 
-    clean_url = url.strip()
-    # إضافة المعطيات تلقائياً لـ Everflow لمنع خطأ 500
-    if ("everflow" in clean_url.lower() or "eflow" in clean_url.lower()) and "?" not in clean_url:
-        clean_url += "?page=1&page_size=100"
-
     response = requests.get(clean_url, headers=headers, timeout=30, verify=False)
     
-    if response.status_code == 401 or response.status_code == 403:
-        raise Exception(f"خطأ في التوثيق (HTTP {response.status_code}): تأكد من صحة الـ API Key و Header Name.")
-    elif response.status_code != 200:
-        error_msg = response.text[:200] if response.text else "No error body"
+    if response.status_code != 200:
+        error_msg = response.text[:300] if response.text else "No error body"
         raise Exception(f"خطأ من السيرفر (HTTP {response.status_code}): {error_msg}")
         
-    if not response.text.strip():
-        raise Exception("الـ API أرجع استجابة فارغة. تأكد من صحة الرابط.")
-
     try:
         return response.json()
     except Exception:
         raise Exception("فشل تحويل الاستجابة إلى JSON.")
 
 def download_suppression_file(url):
-    """تحميل ملف Suppression"""
     resp = requests.get(url, timeout=30, verify=False)
     resp.raise_for_status()
     return resp.content
 
-# --- واجهة المستخدم (Streamlit UI) ---
-st.set_page_config(
-    page_title="Affiliate Suppression Detector",
-    page_icon="🛡️",
-    layout="wide"
-)
-
+# UI Setup
+st.set_page_config(page_title="Affiliate Suppression Detector", page_icon="🛡️", layout="wide")
 st.title("🛡️ Affiliate Suppression List Detector")
-st.caption("كشف واستخراج ملفات Suppression تلقائياً من شبكات الأفلييت")
 
-# القائمة الجانبية
 with st.sidebar:
     st.header("Sponsor Configuration")
-    sponsor_name = st.text_input("Sponsor Name", value="XI Leads", placeholder="e.g., XI Leads")
+    sponsor_name = st.text_input("Sponsor Name", value="XI Leads")
     api_url = st.text_input(
         "API Endpoint URL", 
-        value="https://api.eflow.team/v1/affiliates/offers?page=1&page_size=100",
-        placeholder="https://api.eflow.team/v1/affiliates/offers?page=1&page_size=100"
+        value="https://api.eflow.team/v1/affiliates/alloffers?page=1&page_size=100"
     )
-    
-    auth_method = st.selectbox(
-        "Authentication Method",
-        ["Custom Header", "Bearer Token", "X-API-Key", "API-Key", "No Authentication"]
-    )
+    auth_method = st.selectbox("Authentication Method", ["Custom Header", "Bearer Token", "X-API-Key", "API-Key", "No Authentication"])
     
     custom_header_name = ""
     if auth_method == "Custom Header":
-        custom_header_name = st.text_input("Custom Header Name", value="x-eflow-api-key")
+        custom_header_name = st.text_input("Custom Header Name", value="X-Eflow-Api-Key")
 
     api_key = ""
     if auth_method != "No Authentication":
@@ -143,18 +125,17 @@ with st.sidebar:
 
     scan_submitted = st.button("Scan Offers", use_container_width=True, type="primary")
 
-# التنفيذ عند الضغط على Scan
 if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
-        st.error("المرجو إدخال رابط الـ API والمعطيات المطلوبة.")
+        st.error("المرجو إدخال كل البيانات المطلوبة.")
     else:
-        with st.spinner("جاري الاتصال بـ API وفحص العروض..."):
+        with st.spinner("جاري جلب العروض وفحص ملفات Suppression..."):
             try:
                 json_data = fetch_api_data(api_url, auth_method, api_key, custom_header_name)
                 offers_list = find_offers_list(json_data)
 
                 if not offers_list:
-                    st.warning("تم الاتصال بنجاح، لكن لم يتم العثور على قائمة عروض داخل JSON.")
+                    st.warning("تم الاتصال بنجاح، لكن لم يتم العثور على عروض فـ JSON.")
                 else:
                     processed_records = []
                     for offer in offers_list:
@@ -162,8 +143,8 @@ if scan_submitted:
                             continue
                         
                         offer_id = extract_field_by_candidates(offer, ["network_offer_id", "offer_id", "id", "campaign_id"])
-                        offer_name = extract_field_by_candidates(offer, ["name", "title", "offer_name", "campaign_name"])
-                        geo = extract_field_by_candidates(offer, ["geo", "countries", "country", "relationship", "target_countries"])
+                        offer_name = extract_field_by_candidates(offer, ["name", "title", "offer_name"])
+                        geo = extract_field_by_candidates(offer, ["geo", "countries", "country"])
 
                         suppression_matches = scan_suppression_recursive(offer)
                         
@@ -178,7 +159,7 @@ if scan_submitted:
                             has_suppression = "No"
 
                         processed_records.append({
-                            "Sponsor": sponsor_name if sponsor_name else "Unknown Sponsor",
+                            "Sponsor": sponsor_name,
                             "Offer ID": offer_id,
                             "Offer Name": offer_name,
                             "GEO": geo,
@@ -188,82 +169,10 @@ if scan_submitted:
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed_records)
-                    st.success(f"تمت العملية بنجاح! تم فحص {len(processed_records)} عرض.")
+                    st.success(f"تم فحص {len(processed_records)} عرض بنجاح!")
             except Exception as e:
                 st.error(f"حدث خطأ: {str(e)}")
 
-# عرض النتائج والفلاتر
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
-
-    st.subheader("الإحصائيات")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("إجمالي العروض", len(df))
-    col2.metric("Suppression متوفر", len(df[df["Suppression Found"] == "Yes"]))
-    col3.metric("Suppression غير متوفر", len(df[df["Suppression Found"] == "No"]))
-
-    st.markdown("---")
-    st.subheader("الفلاتر والبحث")
-
-    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
-
-    with f_col1:
-        supp_filter = st.selectbox("حالة الـ Suppression", ["الكل", "المتوفر فقط", "غير المتوفر"])
-    with f_col2:
-        search_name = st.text_input("بحث باسم العرض", "")
-    with f_col3:
-        all_geos = ["الكل"] + sorted(list(set(df["GEO"].dropna().astype(str))))
-        selected_geo = st.selectbox("تصفية حسب GEO", all_geos)
-    with f_col4:
-        all_sponsors = ["الكل"] + sorted(list(set(df["Sponsor"].dropna().astype(str))))
-        selected_sponsor = st.selectbox("تصفية حسب Sponsor", all_sponsors)
-
-    filtered_df = df.copy()
-
-    if supp_filter == "المتوفر فقط":
-        filtered_df = filtered_df[filtered_df["Suppression Found"] == "Yes"]
-    elif supp_filter == "غير المتوفر":
-        filtered_df = filtered_df[filtered_df["Suppression Found"] == "No"]
-
-    if search_name:
-        filtered_df = filtered_df[filtered_df["Offer Name"].str.contains(search_name, case=False, na=False)]
-
-    if selected_geo != "الكل":
-        filtered_df = filtered_df[filtered_df["GEO"] == selected_geo]
-
-    if selected_sponsor != "الكل":
-        filtered_df = filtered_df[filtered_df["Sponsor"] == selected_sponsor]
-
-    st.dataframe(filtered_df, use_container_width=True)
-
-    csv_data = filtered_df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label="📥 تحميل النتائج المفلترة (CSV)",
-        data=csv_data,
-        file_name="suppression_results.csv",
-        mime="text/csv"
-    )
-
-    # أزرار التحميل المباشرة للملفات
-    supp_urls = filtered_df[filtered_df["Suppression File URL"].str.startswith("http", na=False)]
-    if not supp_urls.empty:
-        st.markdown("---")
-        st.subheader("تحميل ملفات Suppression المكتشفة")
-        for idx, row in supp_urls.iterrows():
-            d_col1, d_col2 = st.columns([3, 1])
-            d_col1.write(f"**{row['Offer Name']}** (ID: {row['Offer ID']}) — `{row['Suppression File URL']}`")
-            
-            try:
-                file_content = download_suppression_file(row["Suppression File URL"])
-                file_name = row["Suppression File URL"].split("/")[-1].split("?")[0]
-                if not file_name or "." not in file_name:
-                    file_name = f"suppression_{row['Offer ID']}.txt"
-                
-                d_col2.download_button(
-                    label=f"تحميل {file_name}",
-                    data=file_content,
-                    file_name=file_name,
-                    key=f"dl_{idx}"
-                )
-            except Exception:
-                d_col2.error("تعذر التحميل")
+    st.dataframe(df, use_container_width=True)
