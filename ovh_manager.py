@@ -3,44 +3,21 @@ import ovh
 import time
 import random
 import string
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
 
 st.set_page_config(
-    page_title="OVHcloud Deployer Fix",
+    page_title="OVHcloud Deployer",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (US Fix)")
+st.title("⚡ OVHcloud Multi-Server Deployer")
 
+# Function to generate a default password
 def generate_default_password():
     chars = string.ascii_letters + string.digits
     return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
 
-# دالة لتوليد SSH Key وإضافته تلقائياً لـ OVH
-def ensure_ovh_ssh_key(client, project_id):
-    try:
-        keys = client.get(f"/cloud/project/{project_id}/sshkey")
-        if keys and len(keys) > 0:
-            return keys[0].get("id")
-        
-        # إنشاء مفتاح جديد تلقائياً إذا لم يوجد
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH,
-            serialization.PublicFormat.OpenSSH
-        ).decode('utf-8')
-        
-        new_key = client.post(
-            f"/cloud/project/{project_id}/sshkey",
-            name=f"auto-deploy-{random.randint(100,999)}",
-            publicKey=public_key
-        )
-        return new_key.get("id")
-    except Exception as e:
-        return None
-
+# Hidden background delay between server deployments (in seconds)
 PAUSE_DELAY = 5
 
 # -----------------------------
@@ -133,7 +110,7 @@ except Exception as e:
     st.stop()
 
 # -----------------------------
-# Formatting Maps
+# Safe Format Maps
 # -----------------------------
 region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
 
@@ -153,7 +130,7 @@ ssh_map = {
 }
 
 # -----------------------------
-# Form Input
+# Deployment Form
 # -----------------------------
 st.subheader("🚀 إعدادات الإنشاء المتعدد")
 
@@ -171,7 +148,9 @@ with col1:
 
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
-    selected_ssh = st.selectbox("SSH Key", ["تلقائي (Auto SSH Key)"] + list(ssh_map.keys()))
+    
+    ssh_options = ["بدون SSH Key"] + list(ssh_map.keys())
+    selected_ssh = st.selectbox("SSH Key (اختر مفتاحاً إذا كان متاحاً)", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
@@ -182,7 +161,7 @@ num_servers = st.number_input("عدد السيرفرات (Number of servers)", m
 create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
 
 # -----------------------------
-# Execution
+# Execution Engine
 # -----------------------------
 if create_btn:
     flv_obj = flavor_map[selected_flavor]
@@ -190,13 +169,6 @@ if create_btn:
 
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
-
-    # جلب أو إنشاء SSH Key إجباري لـ OVH US
-    ssh_key_id = None
-    if selected_ssh != "تلقائي (Auto SSH Key)" and selected_ssh in ssh_map:
-        ssh_key_id = ssh_map[selected_ssh].get("id")
-    else:
-        ssh_key_id = ensure_ovh_ssh_key(client, project)
 
     cloud_init = f"""#cloud-config
 password: {custom_password}
@@ -218,23 +190,25 @@ ssh_pwauth: True
             "userData": cloud_init
         }
 
-        if ssh_key_id:
-            payload["sshKeyId"] = ssh_key_id
+        if selected_ssh != "بدون SSH Key" and selected_ssh in ssh_map:
+            payload["sshKeyId"] = ssh_map[selected_ssh].get("id")
 
+        # محاولة الإنشاء الأولى
         try:
             res = client.post(f"/cloud/project/{project}/instance", **payload)
-            st.success(f"✅ تم إنشاء {srv_name} بنجاح!")
-        except Exception as e:
-            # تجربة ثانية بدون userData إذا كانت هي السبب
+            st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
+        except Exception as e1:
+            # محاولة ثانية بـ Payload أصفى وبدون userData في حال تم رفضها من OVH
             try:
                 payload.pop("userData", None)
                 res = client.post(f"/cloud/project/{project}/instance", **payload)
-                st.success(f"✅ تم إنشاء {srv_name} بنجاح (Standard Mode)!")
+                st.success(f"✅ تم إنشاء {srv_name} بنجاح (Standard Payload)!")
             except Exception as e2:
-                st.error(f"❌ خطأ من OVH: {e2}")
+                st.error(f"❌ خطأ من OVH في {srv_name}: {e2}")
 
         progress_bar.progress((i + 1) / int(num_servers))
 
+        # تأخير خفي لمدة 5 ثواني في الخلفية بين كل سيرفر
         if i < num_servers - 1:
             time.sleep(PAUSE_DELAY)
 
@@ -243,7 +217,7 @@ ssh_pwauth: True
     st.session_state["last_created_user"] = os_user
 
 # -----------------------------
-# Display Instances
+# List Active Instances & Format Output
 # -----------------------------
 st.divider()
 st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
