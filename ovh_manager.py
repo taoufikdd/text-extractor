@@ -3,15 +3,7 @@ import ovh
 import time
 import random
 import string
-import os
-
-# استخدام paramiko أو cryptography إذا توفرت لتوليد SSH Key تلقائياً
-try:
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.hazmat.primitives import serialization
-    crypto_available = True
-except ImportError:
-    crypto_available = False
+import base64
 
 st.set_page_config(
     page_title="OVHcloud Deployer",
@@ -21,21 +13,9 @@ st.set_page_config(
 
 st.title("⚡ OVHcloud Multi-Server Deployer")
 
-# توليد كلمة سر تلقائية
 def generate_default_password():
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-    return "P@ss_" + "".join(random.choices(chars, k=10))
-
-# توليد SSH Key مؤقت تلقائي لمنع خطأ OVH
-def generate_ssh_key_pair():
-    if crypto_available:
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        public_key = key.public_key().public_bytes(
-            serialization.Encoding.OpenSSH,
-            serialization.PublicFormat.OpenSSH
-        ).decode('utf-8')
-        return public_key
-    return None
+    chars = string.ascii_letters + string.digits
+    return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
 
 PAUSE_DELAY = 5
 
@@ -129,7 +109,7 @@ except Exception as e:
     st.stop()
 
 # -----------------------------
-# Safe Format Maps
+# Formatting Maps
 # -----------------------------
 region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
 
@@ -149,7 +129,7 @@ ssh_map = {
 }
 
 # -----------------------------
-# Deployment Form
+# Form Input
 # -----------------------------
 st.subheader("🚀 إعدادات الإنشاء المتعدد")
 
@@ -167,9 +147,7 @@ with col1:
 
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
-    
-    # القائمة تعرض SSH Keys المتاحة
-    selected_ssh = st.selectbox("SSH Key (ضروري لـ OVH)", list(ssh_map.keys()) if ssh_map else ["إنشاء SSH Key تلقائياً"])
+    selected_ssh = st.selectbox("SSH Key", list(ssh_map.keys()) if ssh_map else ["بدون SSH Key"])
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
@@ -186,43 +164,25 @@ if create_btn:
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
 
-    # التعامل مع الـ SSH Key
-    ssh_key_id = None
-    if ssh_map and selected_ssh in ssh_map:
-        ssh_key_id = ssh_map[selected_ssh].get("id")
-    else:
-        # إذا لم يكن هناك SSH Key أو اختار إنشاء تلقائي
-        try:
-            auto_pub_key = generate_ssh_key_pair()
-            if auto_pub_key:
-                new_key = client.post(f"/cloud/project/{project}/sshkey", 
-                                      name=f"auto-key-{int(time.time())}", 
-                                      publicKey=auto_pub_key)
-                ssh_key_id = new_key.get("id")
-                st.info(f"تم إنشاء SSH Key تلقائي لحسابك بنجاح لتفادي رفض OVH.")
-        except Exception as ssh_err:
-            st.warning(f"ملاحظة حول SSH Key: {ssh_err}")
-
-    # Script إعداد كلمة المرور والدخول عبر SSH
-    user_data_script = f"""#cloud-config
-chpasswd:
-  list: |
-    {os_user}:{custom_password}
-    root:{custom_password}
-  expire: False
-ssh_pwauth: True
+    # Cloud-init مبسط لتفادي أخطاء OVH Internal Error
+    raw_user_data = f"""#!/bin/bash
+echo "{os_user}:{custom_password}" | chpasswd
+echo "root:{custom_password}" | chpasswd
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+systemctl restart sshd || systemctl restart ssh
 """
 
     payload_base = {
         "region": selected_region,
         "flavorId": flavor_id,
         "imageId": image_id,
-        "monthlyBilling": billing_period == "monthly",
-        "userData": user_data_script,
+        "monthlyBilling": True if billing_period == "monthly" else False,
+        "userData": raw_user_data,
     }
 
-    if ssh_key_id:
-        payload_base["sshKeyId"] = ssh_key_id
+    # إضافة SSH Key إذا توفر
+    if ssh_map and selected_ssh in ssh_map:
+        payload_base["sshKeyId"] = ssh_map[selected_ssh].get("id")
 
     created_servers = []
     progress_bar = st.progress(0)
@@ -237,7 +197,14 @@ ssh_pwauth: True
             created_servers.append(res)
             st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
         except Exception as e:
-            st.error(f"❌ خطأ في إنشاء {srv_name}: {e}")
+            # إذا فشل بسبب userData، نحاول إرسال الطلب بدون userData
+            try:
+                payload_no_userdata = payload.copy()
+                payload_no_userdata.pop("userData", None)
+                res = client.post(f"/cloud/project/{project}/instance", **payload_no_userdata)
+                st.success(f"✅ تم الإنشاء بدون Cloud-Init لـ {srv_name}")
+            except Exception as e2:
+                st.error(f"❌ خطأ في إنشاء {srv_name}: {e2}")
 
         progress_bar.progress((i + 1) / int(num_servers))
 
@@ -249,7 +216,7 @@ ssh_pwauth: True
     st.session_state["last_created_user"] = os_user
 
 # -----------------------------
-# List Active Instances & Format Output
+# Display Instances
 # -----------------------------
 st.divider()
 st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
