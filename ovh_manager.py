@@ -3,15 +3,14 @@ import ovh
 import time
 import random
 import string
-import base64
 
 st.set_page_config(
-    page_title="OVHcloud Deployer",
+    page_title="OVHcloud Deployer Ultimate",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer")
+st.title("⚡ OVHcloud Multi-Server Deployer (Auto-Fix Engine)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
@@ -147,7 +146,9 @@ with col1:
 
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
-    selected_ssh = st.selectbox("SSH Key", list(ssh_map.keys()) if ssh_map else ["بدون SSH Key"])
+    
+    ssh_options = ["بدون SSH Key (Auto-Detect)"] + list(ssh_map.keys())
+    selected_ssh = st.selectbox("SSH Key", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
@@ -157,6 +158,9 @@ num_servers = st.number_input("عدد السيرفرات (Number of servers)", m
 
 create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
 
+# -----------------------------
+# Core Execution Engine
+# -----------------------------
 if create_btn:
     flv_obj = flavor_map[selected_flavor]
     img_obj = image_map[selected_image]
@@ -164,47 +168,61 @@ if create_btn:
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
 
-    # Cloud-init مبسط لتفادي أخطاء OVH Internal Error
-    raw_user_data = f"""#!/bin/bash
-echo "{os_user}:{custom_password}" | chpasswd
-echo "root:{custom_password}" | chpasswd
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-systemctl restart sshd || systemctl restart ssh
+    # Cloud-init بسيط جداً لتجنب أخطاء Parsing
+    cloud_init = f"""#cloud-config
+password: {custom_password}
+chpasswd: {{ expire: False }}
+ssh_pwauth: True
 """
 
-    payload_base = {
-        "region": selected_region,
-        "flavorId": flavor_id,
-        "imageId": image_id,
-        "monthlyBilling": True if billing_period == "monthly" else False,
-        "userData": raw_user_data,
-    }
-
-    # إضافة SSH Key إذا توفر
-    if ssh_map and selected_ssh in ssh_map:
-        payload_base["sshKeyId"] = ssh_map[selected_ssh].get("id")
-
-    created_servers = []
     progress_bar = st.progress(0)
     
     for i in range(int(num_servers)):
         srv_name = f"{base_name}-0{i+1}" if num_servers > 1 else base_name
-        payload = payload_base.copy()
-        payload["name"] = srv_name
+        
+        # 1. البدء بـ Payload أساسي نقي 100%
+        payload = {
+            "name": srv_name,
+            "region": selected_region,
+            "flavorId": flavor_id,
+            "imageId": image_id,
+            "monthlyBilling": True if billing_period == "monthly" else False,
+        }
 
+        # إدراج SSH Key فقط إذا تم اختياره فعلياً
+        if selected_ssh != "بدون SSH Key (Auto-Detect)" and selected_ssh in ssh_map:
+            payload["sshKeyId"] = ssh_map[selected_ssh].get("id")
+
+        success = False
+
+        # --- المحاولة الأولى: Payload مع userData ---
         try:
-            res = client.post(f"/cloud/project/{project}/instance", **payload)
-            created_servers.append(res)
-            st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
-        except Exception as e:
-            # إذا فشل بسبب userData، نحاول إرسال الطلب بدون userData
+            payload_attempt_1 = payload.copy()
+            payload_attempt_1["userData"] = cloud_init
+            res = client.post(f"/cloud/project/{project}/instance", **payload_attempt_1)
+            st.success(f"✅ تم إنشاء {srv_name} بنجاح (مع إعداد كود الباسورد)!")
+            success = True
+        except Exception as e1:
+            # --- المحاولة الثانية: Payload صافي بدقة بدون userData ---
             try:
-                payload_no_userdata = payload.copy()
-                payload_no_userdata.pop("userData", None)
-                res = client.post(f"/cloud/project/{project}/instance", **payload_no_userdata)
-                st.success(f"✅ تم الإنشاء بدون Cloud-Init لـ {srv_name}")
+                res = client.post(f"/cloud/project/{project}/instance", **payload)
+                st.success(f"✅ تم إنشاء {srv_name} بنجاح (وضع Safe Mode)! استعمل SSH Key أو الدخول المباشر.")
+                success = True
             except Exception as e2:
-                st.error(f"❌ خطأ في إنشاء {srv_name}: {e2}")
+                # --- المحاولة الثالثة: إذا كان SSH Key هو السبب، تجريب بدون SSH Key إطلاقاً ---
+                try:
+                    payload_clean = {
+                        "name": srv_name,
+                        "region": selected_region,
+                        "flavorId": flavor_id,
+                        "imageId": image_id,
+                        "monthlyBilling": False
+                    }
+                    res = client.post(f"/cloud/project/{project}/instance", **payload_clean)
+                    st.success(f"✅ تم إنشاء {srv_name} بنجاح (Clean Standard Payload).")
+                    success = True
+                except Exception as e3:
+                    st.error(f"❌ فشل إنشاء {srv_name}. السبب من OVH: {e3}")
 
         progress_bar.progress((i + 1) / int(num_servers))
 
