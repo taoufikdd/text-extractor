@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (Final Fixed)")
+st.title("⚡ OVHcloud Multi-Server Deployer (Region-Filtered Fix)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
@@ -20,7 +20,6 @@ def generate_default_password():
 PAUSE_DELAY = 5
 
 def get_or_create_ssh_key(client, project_id):
-    """جلب أو إنشاء SSH Key تلقائياً لحسابات OVH US"""
     try:
         keys = client.get(f"/cloud/project/{project_id}/sshkey")
         if keys:
@@ -134,36 +133,46 @@ except Exception as e:
     st.stop()
 
 # -----------------------------
-# Safe Mapping Logic & Region Name Fix
+# Deployment Form
 # -----------------------------
-region_list = []
-for r in regions:
-    r_name = r.get("name") or r.get("region") if isinstance(r, dict) else str(r)
-    if r_name:
-        region_list.append(r_name)
+st.subheader("🚀 إعدادات الإنشاء المتعدد")
 
+# 1. اختيار المنطقة أولاً
+region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
 if not region_list:
     region_list = ["US-EAST-VA-1", "US-WEST-OR-1"]
 
-flavor_map = {}
+selected_region = st.selectbox("Region (المنطقة)", region_list)
+
+# 2. فلترة Flavors حسب المنطقة المختارة
+available_flavors = []
 for f in flavors:
     if isinstance(f, dict):
-        raw_ram = f.get("ram", 0)
-        if raw_ram >= 1024:
-            ram_gb = round(raw_ram / 1024, 1)
-        elif raw_ram > 0:
-            ram_gb = raw_ram
-        else:
-            ram_gb = "?"
-            
-        vcpus = f.get("vcpus", "?")
-        name = f.get("name", "Unknown")
-        label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
-        flavor_map[label] = f
+        f_region = f.get("region")
+        # فلترة المواصفات المتوفرة في المنطقة المختارة فقط
+        if not f_region or f_region == selected_region:
+            available_flavors.append(f)
+
+flavor_map = {}
+for f in available_flavors:
+    raw_ram = f.get("ram", 0)
+    ram_gb = round(raw_ram / 1024, 1) if raw_ram >= 1024 else raw_ram
+    vcpus = f.get("vcpus", "?")
+    name = f.get("name", "Unknown")
+    label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
+    flavor_map[label] = f
+
+# 3. فلترة الصور حسب المنطقة المختارة
+available_images = []
+for i in images:
+    if isinstance(i, dict):
+        i_region = i.get("region")
+        if not i_region or i_region == selected_region:
+            available_images.append(i)
 
 image_map = {
     i.get("name", i.get("id", "Unknown")): i 
-    for i in images if isinstance(i, dict)
+    for i in available_images
 }
 
 ssh_map = {
@@ -171,16 +180,15 @@ ssh_map = {
     for s in sshkeys if isinstance(s, dict)
 }
 
-# -----------------------------
-# Deployment Form
-# -----------------------------
-st.subheader("🚀 إعدادات الإنشاء المتعدد")
-
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_region = st.selectbox("Region (المنطقة)", region_list)
-    selected_flavor = st.selectbox("Flavor (المواصفات)", list(flavor_map.keys()))
+    if flavor_map:
+        selected_flavor = st.selectbox("Flavor (المواصفات المتوفرة)", list(flavor_map.keys()))
+    else:
+        st.error("لا توجد مواصفات (Flavors) متوفرة في هذه المنطقة!")
+        st.stop()
+        
     base_name = st.text_input("Prefix Name", value="server")
     
     if "def_pass" not in st.session_state:
@@ -189,7 +197,12 @@ with col1:
     custom_password = st.text_input("Password للسيرفرات", value=st.session_state["def_pass"])
 
 with col2:
-    selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
+    if image_map:
+        selected_image = st.selectbox("Operating System (النظام المتوفر)", list(image_map.keys()))
+    else:
+        st.error("لا توجد أنظمة تشغيل متوفرة في هذه المنطقة!")
+        st.stop()
+        
     ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
     selected_ssh = st.selectbox("SSH Key", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
@@ -197,11 +210,11 @@ with col2:
 
 st.divider()
 
-num_servers = st.number_input("عدد السيرفرات (Number of servers)", min_value=1, max_value=20, value=1)
+num_servers = st.number_input("عدد السيرفرات", min_value=1, max_value=20, value=1)
 create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
 
 # -----------------------------
-# Execution Engine
+# Core Execution Engine
 # -----------------------------
 if create_btn:
     flv_obj = flavor_map[selected_flavor]
@@ -209,13 +222,6 @@ if create_btn:
 
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
-
-    # تصحيح اسم المنطقة التلقائي لحل مشكلة Internal Error
-    target_region = selected_region
-    if target_region == "US-EAST-VA":
-        target_region = "US-EAST-VA-1"
-    elif target_region == "US-WEST-OR":
-        target_region = "US-WEST-OR-1"
 
     # جلب أو إنشاء SSH Key
     target_ssh_id = None
@@ -235,10 +241,9 @@ ssh_pwauth: True
     for i in range(int(num_servers)):
         srv_name = f"{base_name}-0{i+1}" if num_servers > 1 else base_name
         
-        # Payload 1: الطلب الأولي الكامل
         payload = {
             "name": srv_name,
-            "region": target_region,
+            "region": selected_region,
             "flavorId": flavor_id,
             "imageId": image_id,
             "monthlyBilling": True if billing_period == "monthly" else False,
@@ -251,7 +256,6 @@ ssh_pwauth: True
             res = client.post(f"/cloud/project/{project}/instance", **payload)
             st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
         except Exception as e1:
-            # Payload 2: تجربة بدون userData في حالة رفض cloud-init
             try:
                 payload.pop("userData", None)
                 res = client.post(f"/cloud/project/{project}/instance", **payload)
