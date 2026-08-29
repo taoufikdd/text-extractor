@@ -1,330 +1,292 @@
 import streamlit as st
 import ovh
 import time
-import random
-import string
-import subprocess
 
 st.set_page_config(
-    page_title="OVHcloud Multi-Server Deployer",
-    page_icon="⚡",
+    page_title="OVHcloud Public Cloud Manager",
+    page_icon="☁️",
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (Region-Filtered Fix)")
-
-def generate_default_password():
-    chars = string.ascii_letters + string.digits
-    return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
-
-PAUSE_DELAY = 5
-
-def get_or_create_ssh_key(client, project_id):
-    try:
-        keys = client.get(f"/cloud/project/{project_id}/sshkey")
-        if keys:
-            return keys[0].get("id")
-        
-        res = subprocess.run(
-            ["ssh-keygen", "-t", "rsa", "-b", "2048", "-N", "", "-f", "/tmp/ovh_tmp_key"],
-            capture_output=True, text=True
-        )
-        if res.returncode == 0:
-            with open("/tmp/ovh_tmp_key.pub", "r") as f:
-                pub_key = f.read().strip()
-            
-            new_k = client.post(
-                f"/cloud/project/{project_id}/sshkey",
-                name=f"auto-key-{random.randint(1000,9999)}",
-                publicKey=pub_key
-            )
-            return new_k.get("id")
-    except Exception:
-        pass
-    return None
+st.title("☁️ OVHcloud Public Cloud Manager")
+st.caption("Single-instance deployment and basic management for normal infrastructure administration.")
 
 # -----------------------------
-# Sidebar: Credentials
+# OVH API client
+# -----------------------------
+def get_client(endpoint, application_key, application_secret, consumer_key):
+    return ovh.Client(
+        endpoint=endpoint,
+        application_key=application_key.strip(),
+        application_secret=application_secret.strip(),
+        consumer_key=consumer_key.strip(),
+    )
+
+def api_call(client, method, path, **kwargs):
+    return getattr(client, method)(path, **kwargs)
+
+# -----------------------------
+# Sidebar: credentials
 # -----------------------------
 with st.sidebar:
-    st.header("🔑 مفاتيح OVH API")
+    st.header("OVHcloud API")
 
     endpoint = st.selectbox(
         "Endpoint",
-        ["ovh-us", "ovh-eu", "ovh-ca"],
+        ["ovh-eu", "ovh-ca"],
         index=0,
-        key="endpoint_input"
+        help="Use the endpoint matching your OVHcloud account.",
     )
 
-    application_key = st.text_input("Application Key", type="password", key="ak")
-    application_secret = st.text_input("Application Secret", type="password", key="as")
-    consumer_key = st.text_input("Consumer Key", type="password", key="ck")
+    application_key = st.text_input("Application Key", type="password")
+    application_secret = st.text_input("Application Secret", type="password")
+    consumer_key = st.text_input("Consumer Key", type="password")
 
     connect = st.button("Connect", type="primary", use_container_width=True)
 
 if connect:
     if not all([application_key, application_secret, consumer_key]):
-        st.error("الرجاء إدخال جميع المفاتيح أولاً!")
+        st.error("Enter Application Key, Application Secret and Consumer Key.")
         st.stop()
 
     try:
-        client = ovh.Client(
-            endpoint=endpoint,
-            application_key=application_key.strip(),
-            application_secret=application_secret.strip(),
-            consumer_key=consumer_key.strip(),
+        client = get_client(
+            endpoint,
+            application_key,
+            application_secret,
+            consumer_key,
         )
+
         projects = client.get("/cloud/project")
-        st.session_state["connected"] = True
+        st.session_state["ovh_client"] = client
         st.session_state["projects"] = projects
-        st.success(f"تم الاتصال بنجاح. تم العثور على {len(projects)} مشروع.")
+        st.success(f"Connected. {len(projects)} Public Cloud project(s) found.")
     except Exception as e:
-        st.session_state["connected"] = False
-        st.error(f"فشل الاتصال: {e}")
+        st.error(f"Connection failed: {e}")
 
-if not st.session_state.get("connected"):
-    st.info("أدخل المفاتيح في القائمة الجانبية واضغط Connect.")
-    st.stop()
-
+client = st.session_state.get("ovh_client")
 projects = st.session_state.get("projects", [])
-if not projects:
-    st.warning("لم يتم العثور على أي مشروع Public Cloud.")
+
+if not client:
+    st.info("Enter your OVHcloud API credentials in the sidebar and click Connect.")
     st.stop()
 
-client = ovh.Client(
-    endpoint=st.session_state["endpoint_input"],
-    application_key=st.session_state["ak"],
-    application_secret=st.session_state["as"],
-    consumer_key=st.session_state["ck"],
+if not projects:
+    st.warning("No Public Cloud project was returned by the API.")
+    st.stop()
+
+# -----------------------------
+# Select project
+# -----------------------------
+project = st.selectbox(
+    "Public Cloud Project",
+    projects,
+    format_func=lambda x: str(x),
 )
 
 # -----------------------------
-# Select Project
+# Load project configuration
 # -----------------------------
-project = st.selectbox("Public Cloud Project", projects)
-
-# -----------------------------
-# Load Project Config
-# -----------------------------
-@st.cache_data(ttl=300)
-def load_config(endpoint_val, ak, _as, ck, project_id):
-    c = ovh.Client(
-        endpoint=endpoint_val,
-        application_key=ak,
-        application_secret=_as,
-        consumer_key=ck,
+@st.cache_data(ttl=120)
+def load_config(endpoint, application_key, application_secret, consumer_key, project_id):
+    c = get_client(
+        endpoint,
+        application_key,
+        application_secret,
+        consumer_key,
     )
+
     regions = c.get(f"/cloud/project/{project_id}/region")
     flavors = c.get(f"/cloud/project/{project_id}/flavor")
     images = c.get(f"/cloud/project/{project_id}/image")
     sshkeys = c.get(f"/cloud/project/{project_id}/sshkey")
+
     return regions, flavors, images, sshkeys
 
 try:
     regions, flavors, images, sshkeys = load_config(
-        st.session_state["endpoint_input"],
-        st.session_state["ak"],
-        st.session_state["as"],
-        st.session_state["ck"],
+        endpoint,
+        application_key,
+        application_secret,
+        consumer_key,
         project,
     )
 except Exception as e:
-    st.error(f"تعذر جلب إعدادات المشروع: {e}")
+    st.error(f"Could not load project configuration: {e}")
     st.stop()
 
 # -----------------------------
-# Deployment Form
+# Normalize API objects
 # -----------------------------
-st.subheader("🚀 إعدادات الإنشاء المتعدد")
+def label_region(x):
+    return f"{x.get('name', x.get('region', 'unknown'))}"
 
-# 1. اختيار المنطقة أولاً
-region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
-if not region_list:
-    region_list = ["US-EAST-VA-1", "US-WEST-OR-1"]
+def label_flavor(x):
+    name = x.get("name", x.get("id", "unknown"))
+    vcpu = x.get("vcpus", x.get("vcore", "?"))
+    ram = x.get("ram", "?")
+    return f"{name} | {vcpu} vCPU | {ram} MB"
 
-selected_region = st.selectbox("Region (المنطقة)", region_list)
+def label_image(x):
+    name = x.get("name", x.get("id", "unknown"))
+    version = x.get("version", "")
+    return f"{name} {version}".strip()
 
-# 2. فلترة Flavors حسب المنطقة المختارة
-available_flavors = []
-for f in flavors:
-    if isinstance(f, dict):
-        f_region = f.get("region")
-        # فلترة المواصفات المتوفرة في المنطقة المختارة فقط
-        if not f_region or f_region == selected_region:
-            available_flavors.append(f)
+def label_ssh(x):
+    return x.get("name", x.get("id", "unknown"))
 
-flavor_map = {}
-for f in available_flavors:
-    raw_ram = f.get("ram", 0)
-    ram_gb = round(raw_ram / 1024, 1) if raw_ram >= 1024 else raw_ram
-    vcpus = f.get("vcpus", "?")
-    name = f.get("name", "Unknown")
-    label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
-    flavor_map[label] = f
+region_names = [label_region(x) for x in regions]
+flavor_names = [label_flavor(x) for x in flavors]
+image_names = [label_image(x) for x in images]
+ssh_names = [label_ssh(x) for x in sshkeys]
 
-# 3. فلترة الصور حسب المنطقة المختارة
-available_images = []
-for i in images:
-    if isinstance(i, dict):
-        i_region = i.get("region")
-        if not i_region or i_region == selected_region:
-            available_images.append(i)
+if not region_names or not flavor_names or not image_names:
+    st.error("OVHcloud returned incomplete region/flavor/image data.")
+    st.stop()
 
-image_map = {
-    i.get("name", i.get("id", "Unknown")): i 
-    for i in available_images
-}
-
-ssh_map = {
-    s.get("name", s.get("id", "Unknown")): s 
-    for s in sshkeys if isinstance(s, dict)
-}
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if flavor_map:
-        selected_flavor = st.selectbox("Flavor (المواصفات المتوفرة)", list(flavor_map.keys()))
-    else:
-        st.error("لا توجد مواصفات (Flavors) متوفرة في هذه المنطقة!")
-        st.stop()
-        
-    base_name = st.text_input("Prefix Name", value="server")
-    
-    if "def_pass" not in st.session_state:
-        st.session_state["def_pass"] = generate_default_password()
-        
-    custom_password = st.text_input("Password للسيرفرات", value=st.session_state["def_pass"])
-
-with col2:
-    if image_map:
-        selected_image = st.selectbox("Operating System (النظام المتوفر)", list(image_map.keys()))
-    else:
-        st.error("لا توجد أنظمة تشغيل متوفرة في هذه المنطقة!")
-        st.stop()
-        
-    ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
-    selected_ssh = st.selectbox("SSH Key", ssh_options)
-    billing_period = st.selectbox("Billing", ["hourly", "monthly"])
-    os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
-
-st.divider()
-
-num_servers = st.number_input("عدد السيرفرات", min_value=1, max_value=20, value=1)
-create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
+region_by_name = {label_region(x): x for x in regions}
+flavor_by_name = {label_flavor(x): x for x in flavors}
+image_by_name = {label_image(x): x for x in images}
+ssh_by_name = {label_ssh(x): x for x in sshkeys}
 
 # -----------------------------
-# Core Execution Engine
+# Create instance
 # -----------------------------
+st.subheader("🚀 Create Instance")
+
+c1, c2 = st.columns(2)
+
+with c1:
+    selected_region = st.selectbox("Region", region_names)
+    selected_flavor = st.selectbox("Flavor", flavor_names)
+
+with c2:
+    selected_image = st.selectbox("Operating System / Image", image_names)
+    selected_ssh = st.selectbox(
+        "SSH Key",
+        ssh_names if ssh_names else ["No SSH key available"],
+    )
+
+instance_name = st.text_input(
+    "Instance Name",
+    value="ovh-server-01",
+)
+
+billing_period = st.selectbox(
+    "Billing Period",
+    ["hourly", "monthly"],
+)
+
+create_btn = st.button(
+    "Create Instance",
+    type="primary",
+    use_container_width=True,
+)
+
 if create_btn:
-    flv_obj = flavor_map[selected_flavor]
-    img_obj = image_map[selected_image]
+    try:
+        region_obj = region_by_name[selected_region]
+        flavor_obj = flavor_by_name[selected_flavor]
+        image_obj = image_by_name[selected_image]
 
-    flavor_id = flv_obj.get("id")
-    image_id = img_obj.get("id")
+        region = region_obj.get("name") or region_obj.get("region")
+        flavor_id = flavor_obj.get("id") or flavor_obj.get("name")
+        image_id = image_obj.get("id")
 
-    # جلب أو إنشاء SSH Key
-    target_ssh_id = None
-    if selected_ssh != "تلقائي (Auto Detect)" and selected_ssh in ssh_map:
-        target_ssh_id = ssh_map[selected_ssh].get("id")
-    else:
-        target_ssh_id = get_or_create_ssh_key(client, project)
+        if not region or not flavor_id or not image_id:
+            st.error("Could not determine region/flavor/image identifiers.")
+            st.stop()
 
-    cloud_init = f"""#cloud-config
-password: {custom_password}
-chpasswd: {{ expire: False }}
-ssh_pwauth: True
-"""
+        if not ssh_names:
+            st.error("An SSH key is required for a normal Linux instance.")
+            st.stop()
 
-    progress_bar = st.progress(0)
-    
-    for i in range(int(num_servers)):
-        srv_name = f"{base_name}-0{i+1}" if num_servers > 1 else base_name
-        
+        ssh_obj = ssh_by_name[selected_ssh]
+        ssh_name = ssh_obj.get("name")
+
         payload = {
-            "name": srv_name,
-            "region": selected_region,
-            "flavorId": flavor_id,
-            "imageId": image_id,
-            "monthlyBilling": True if billing_period == "monthly" else False,
-            "userData": cloud_init
+            "billingPeriod": billing_period,
+            "bootFrom": {
+                "imageId": image_id,
+            },
+            "flavor": {
+                "id": flavor_id,
+            },
+            "name": instance_name.strip(),
+            "network": {
+                "public": True,
+            },
+            "sshKey": {
+                "name": ssh_name,
+            },
         }
-        if target_ssh_id:
-            payload["sshKeyId"] = target_ssh_id
 
-        try:
-            res = client.post(f"/cloud/project/{project}/instance", **payload)
-            st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
-        except Exception as e1:
-            try:
-                payload.pop("userData", None)
-                res = client.post(f"/cloud/project/{project}/instance", **payload)
-                st.success(f"✅ تم إنشاء {srv_name} بنجاح (بدون cloud-init)!")
-            except Exception as e2:
-                st.error(f"❌ خطأ من OVH عند إنشاء {srv_name}: {e2}")
+        with st.spinner("Creating instance..."):
+            result = client.post(
+                f"/cloud/project/{project}/region/{region}/instance",
+                **payload,
+            )
 
-        progress_bar.progress((i + 1) / int(num_servers))
+        st.success("Instance creation request submitted.")
+        st.json(result)
 
-        if i < num_servers - 1:
-            time.sleep(PAUSE_DELAY)
+        time.sleep(2)
+        st.rerun()
 
-    st.balloons()
-    st.session_state["last_created_pass"] = custom_password
-    st.session_state["last_created_user"] = os_user
+    except Exception as e:
+        st.error(f"Creation failed: {e}")
 
 # -----------------------------
-# List Active Instances & Format Output
+# Server list
 # -----------------------------
 st.divider()
-st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
+st.subheader("🖥️ Instances")
 
 try:
     instances = client.get(f"/cloud/project/{project}/instance")
-    if not instances:
-        st.info("لا توجد سيرفرات حالياً.")
-    else:
-        formatted_list = []
-        saved_pass = st.session_state.get("last_created_pass", custom_password)
-        saved_user = st.session_state.get("last_created_user", "ubuntu")
+except Exception as e:
+    st.error(f"Could not load instances: {e}")
+    st.stop()
 
-        for inst in instances:
-            iid = inst.get("id")
-            name = inst.get("name")
-            status = inst.get("status")
-            reg = inst.get("region")
-            ip_addresses = inst.get("ipAddresses", [])
+if not instances:
+    st.info("No instances found.")
+else:
+    for inst in instances:
+        iid = inst.get("id")
+        name = inst.get("name", "Unnamed")
+        region = inst.get("region", "")
+        status = inst.get("status", "")
+        ip = inst.get("ipAddresses") or inst.get("ipAddresses", [])
 
-            public_ip = "جاري الجلب..."
-            for ip_info in ip_addresses:
-                if isinstance(ip_info, dict) and ip_info.get("type") == "public":
-                    public_ip = ip_info.get("ip")
-                    break
-                elif isinstance(ip_info, dict) and "ip" in ip_info:
-                    public_ip = ip_info.get("ip")
+        with st.container(border=True):
+            a, b, c, d = st.columns([2, 1, 1, 1])
 
-            formatted_entry = f"{public_ip} | {saved_user} | {saved_pass}"
-            formatted_list.append(formatted_entry)
+            with a:
+                st.markdown(f"**{name}**")
+                st.caption(f"ID: {iid}")
 
-            with st.container(border=True):
-                col_a, col_b, col_c = st.columns([3, 2, 1])
-                with col_a:
-                    st.write(f"**{name}** (`{iid}`)")
-                    st.code(formatted_entry, language="text")
-                with col_b:
-                    st.write(f"Region: {reg} | Status: **{status}**")
-                with col_c:
-                    if st.button("🗑️ مسح", key=f"del_{iid}"):
-                        client.delete(f"/cloud/project/{project}/instance/{iid}")
-                        st.success(f"تم مسح {name}")
+            with b:
+                st.write(f"Region: {region}")
+
+            with c:
+                st.write(f"Status: {status}")
+
+            with d:
+                if st.button("🗑️ Delete", key=f"delete_{iid}"):
+                    try:
+                        client.delete(
+                            f"/cloud/project/{project}/region/{region}/instance/{iid}"
+                        )
+                        st.success(f"Deleted {name}")
                         time.sleep(1)
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Delete failed: {e}")
 
-        st.subheader("📋 نسخ كل السيرفرات بـ Format موحد:")
-        st.text_area(
-            "جاهزة للنسخ المباشر:",
-            value="\n".join(formatted_list),
-            height=150
-        )
+            if ip:
+                st.write("IP:", ip)
 
-except Exception as e:
-    st.error(f"تعذر جلب السيرفرات: {e}")
+st.caption(
+    "This manager uses OVHcloud Public Cloud APIs. It intentionally does not configure SMTP, "
+    "bulk-mailing, or port-unblocking behavior."
+)
