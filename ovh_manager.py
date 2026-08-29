@@ -3,6 +3,15 @@ import ovh
 import time
 import random
 import string
+import os
+
+# استخدام paramiko أو cryptography إذا توفرت لتوليد SSH Key تلقائياً
+try:
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.hazmat.primitives import serialization
+    crypto_available = True
+except ImportError:
+    crypto_available = False
 
 st.set_page_config(
     page_title="OVHcloud Deployer",
@@ -12,12 +21,22 @@ st.set_page_config(
 
 st.title("⚡ OVHcloud Multi-Server Deployer")
 
-# Function to generate a default password
+# توليد كلمة سر تلقائية
 def generate_default_password():
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     return "P@ss_" + "".join(random.choices(chars, k=10))
 
-# Hidden background delay between server deployments (in seconds)
+# توليد SSH Key مؤقت تلقائي لمنع خطأ OVH
+def generate_ssh_key_pair():
+    if crypto_available:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_key = key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH,
+            serialization.PublicFormat.OpenSSH
+        ).decode('utf-8')
+        return public_key
+    return None
+
 PAUSE_DELAY = 5
 
 # -----------------------------
@@ -112,12 +131,7 @@ except Exception as e:
 # -----------------------------
 # Safe Format Maps
 # -----------------------------
-region_list = []
-for r in regions:
-    if isinstance(r, dict):
-        region_list.append(r.get("name") or r.get("region") or str(r))
-    else:
-        region_list.append(str(r))
+region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
 
 flavor_map = {
     f"{f.get('name', 'Unknown')} | {f.get('vcpus', '?')} vCPU | {f.get('ram', '?')}MB": f 
@@ -142,7 +156,7 @@ st.subheader("🚀 إعدادات الإنشاء المتعدد")
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_region = st.selectbox("Region (المنطقة)", region_list if region_list else ["GRA7"])
+    selected_region = st.selectbox("Region (المنطقة)", region_list if region_list else ["US-EAST-VA"])
     selected_flavor = st.selectbox("Flavor (المواصفات)", list(flavor_map.keys()))
     base_name = st.text_input("Prefix Name", value="server")
     
@@ -154,8 +168,8 @@ with col1:
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
     
-    ssh_options = ["بدون SSH Key"] + list(ssh_map.keys())
-    selected_ssh = st.selectbox("SSH Key (اختر مفتاحاً إذا توفر)", ssh_options)
+    # القائمة تعرض SSH Keys المتاحة
+    selected_ssh = st.selectbox("SSH Key (ضروري لـ OVH)", list(ssh_map.keys()) if ssh_map else ["إنشاء SSH Key تلقائياً"])
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
@@ -171,8 +185,25 @@ if create_btn:
 
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
-    
-    # Cloud-Init script لتعيين كلمة السر والدخول عبر SSH
+
+    # التعامل مع الـ SSH Key
+    ssh_key_id = None
+    if ssh_map and selected_ssh in ssh_map:
+        ssh_key_id = ssh_map[selected_ssh].get("id")
+    else:
+        # إذا لم يكن هناك SSH Key أو اختار إنشاء تلقائي
+        try:
+            auto_pub_key = generate_ssh_key_pair()
+            if auto_pub_key:
+                new_key = client.post(f"/cloud/project/{project}/sshkey", 
+                                      name=f"auto-key-{int(time.time())}", 
+                                      publicKey=auto_pub_key)
+                ssh_key_id = new_key.get("id")
+                st.info(f"تم إنشاء SSH Key تلقائي لحسابك بنجاح لتفادي رفض OVH.")
+        except Exception as ssh_err:
+            st.warning(f"ملاحظة حول SSH Key: {ssh_err}")
+
+    # Script إعداد كلمة المرور والدخول عبر SSH
     user_data_script = f"""#cloud-config
 chpasswd:
   list: |
@@ -190,9 +221,8 @@ ssh_pwauth: True
         "userData": user_data_script,
     }
 
-    # إضافة sshKeyId فقط إذا تم اختياره من القائمة
-    if selected_ssh != "بدون SSH Key" and selected_ssh in ssh_map:
-        payload_base["sshKeyId"] = ssh_map[selected_ssh].get("id")
+    if ssh_key_id:
+        payload_base["sshKeyId"] = ssh_key_id
 
     created_servers = []
     progress_bar = st.progress(0)
@@ -215,7 +245,6 @@ ssh_pwauth: True
             time.sleep(PAUSE_DELAY)
 
     st.balloons()
-    
     st.session_state["last_created_pass"] = custom_password
     st.session_state["last_created_user"] = os_user
 
