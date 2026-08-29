@@ -1,255 +1,330 @@
 import streamlit as st
-import requests
+import ovh
 import time
-import socket
+import random
+import string
+import subprocess
 
-# ---------------------------------------------------------
-# Page Config & Custom Modern Dark Theme
-# ---------------------------------------------------------
-st.set_page_config(page_title="Multi-Cloud Server Manager", page_icon="⚡", layout="wide")
+st.set_page_config(
+    page_title="OVHcloud Multi-Server Deployer",
+    page_icon="⚡",
+    layout="wide",
+)
 
-st.markdown("""
-<style>
-    /* Dark Theme Core */
-    .stApp {
-        background-color: #0B0F19;
-        color: #F9FAFB;
-    }
-    
-    /* Inputs Styling */
-    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div {
-        background-color: #1F2937 !important;
-        border-color: #374151 !important;
-        color: #F9FAFB !important;
-        border-radius: 8px !important;
-    }
-    
-    /* Primary Buttons */
-    .stButton>button {
-        background-color: #2563EB;
-        color: #FFFFFF;
-        border-radius: 8px;
-        border: none;
-        padding: 10px 24px;
-        font-weight: 600;
-        width: 100%;
-        transition: all 0.2s ease;
-    }
-    .stButton>button:hover {
-        background-color: #1D4ED8;
-    }
-    
-    /* Textarea output styling */
-    textarea {
-        background-color: #111827 !important;
-        color: #10B981 !important;
-        font-family: 'Courier New', Courier, monospace !important;
-        border: 1px solid #1F2937 !important;
-        border-radius: 8px !important;
-    }
+st.title("⚡ OVHcloud Multi-Server Deployer (Region-Filtered Fix)")
 
-    /* Container Cards */
-    .css-1r6slb0, .e1f1d6gn1 {
-        background-color: #111827;
-        border: 1px solid #1F2937;
-        padding: 20px;
-        border-radius: 12px;
-    }
-</style>
-""", unsafe_allow_html=True)
+def generate_default_password():
+    chars = string.ascii_letters + string.digits
+    return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
 
-UPCLOUD_API = "https://api.upcloud.com/1.3"
+PAUSE_DELAY = 5
 
-# ---------------------------------------------------------
-# Helper Functions
-# ---------------------------------------------------------
-def upcloud_req(token, endpoint, method="GET", payload=None):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    url = f"{UPCLOUD_API}{endpoint}"
-    if method == "POST":
-        res = requests.post(url, headers=headers, json=payload)
-    elif method == "DELETE":
-        res = requests.delete(url, headers=headers)
-    else:
-        res = requests.get(url, headers=headers)
-    
-    if not res.ok:
-        raise Exception(f"UpCloud API Error ({res.status_code}): {res.text}")
-    return res.json() if res.text else {}
-
-def check_ssh_port(ip, port=22, timeout=3):
-    """
-    Checks if SSH Port (22) is actually OPEN and responding.
-    Returns True ONLY when the server is ready.
-    """
+def get_or_create_ssh_key(client, project_id):
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((ip, int(port)))
-        sock.close()
-        return result == 0
-    except:
-        return False
-
-# ---------------------------------------------------------
-# UI App
-# ---------------------------------------------------------
-st.title("⚡ Server Deployer & Manager")
-st.caption("Auto-verification & clean export format")
-
-# Sidebar Configuration / Authentication
-st.sidebar.header("🔑 Provider Settings")
-provider = st.sidebar.selectbox("Select Cloud Provider", ["UpCloud", "OVHcloud"])
-
-if provider == "UpCloud":
-    api_token = st.sidebar.text_input("UpCloud API Token", type="password")
-    
-    if api_token:
-        if "upcloud_auth" not in st.session_state:
-            try:
-                upcloud_req(api_token, "/account")
-                st.session_state["upcloud_auth"] = True
-                st.sidebar.success("UpCloud Connected!")
-            except Exception as e:
-                st.session_state["upcloud_auth"] = False
-                st.sidebar.error(f"Auth Failed: {e}")
-
-    if st.session_state.get("upcloud_auth"):
-        # Load UpCloud resources
-        @st.cache_data(ttl=300)
-        def fetch_upcloud_resources(token):
-            zones = upcloud_req(token, "/zone").get("zones", {}).get("zone", [])
-            plans = upcloud_req(token, "/plan").get("plans", {}).get("plan", [])
-            templates = upcloud_req(token, "/storage/template").get("storages", {}).get("storage", [])
+        keys = client.get(f"/cloud/project/{project_id}/sshkey")
+        if keys:
+            return keys[0].get("id")
+        
+        res = subprocess.run(
+            ["ssh-keygen", "-t", "rsa", "-b", "2048", "-N", "", "-f", "/tmp/ovh_tmp_key"],
+            capture_output=True, text=True
+        )
+        if res.returncode == 0:
+            with open("/tmp/ovh_tmp_key.pub", "r") as f:
+                pub_key = f.read().strip()
             
-            os_list = [
-                t for t in templates 
-                if any(k in t.get("title", "").lower() for k in ["ubuntu", "alma", "centos", "debian"])
-            ]
-            return zones, plans, os_list
+            new_k = client.post(
+                f"/cloud/project/{project_id}/sshkey",
+                name=f"auto-key-{random.randint(1000,9999)}",
+                publicKey=pub_key
+            )
+            return new_k.get("id")
+    except Exception:
+        pass
+    return None
+
+# -----------------------------
+# Sidebar: Credentials
+# -----------------------------
+with st.sidebar:
+    st.header("🔑 مفاتيح OVH API")
+
+    endpoint = st.selectbox(
+        "Endpoint",
+        ["ovh-us", "ovh-eu", "ovh-ca"],
+        index=0,
+        key="endpoint_input"
+    )
+
+    application_key = st.text_input("Application Key", type="password", key="ak")
+    application_secret = st.text_input("Application Secret", type="password", key="as")
+    consumer_key = st.text_input("Consumer Key", type="password", key="ck")
+
+    connect = st.button("Connect", type="primary", use_container_width=True)
+
+if connect:
+    if not all([application_key, application_secret, consumer_key]):
+        st.error("الرجاء إدخال جميع المفاتيح أولاً!")
+        st.stop()
+
+    try:
+        client = ovh.Client(
+            endpoint=endpoint,
+            application_key=application_key.strip(),
+            application_secret=application_secret.strip(),
+            consumer_key=consumer_key.strip(),
+        )
+        projects = client.get("/cloud/project")
+        st.session_state["connected"] = True
+        st.session_state["projects"] = projects
+        st.success(f"تم الاتصال بنجاح. تم العثور على {len(projects)} مشروع.")
+    except Exception as e:
+        st.session_state["connected"] = False
+        st.error(f"فشل الاتصال: {e}")
+
+if not st.session_state.get("connected"):
+    st.info("أدخل المفاتيح في القائمة الجانبية واضغط Connect.")
+    st.stop()
+
+projects = st.session_state.get("projects", [])
+if not projects:
+    st.warning("لم يتم العثور على أي مشروع Public Cloud.")
+    st.stop()
+
+client = ovh.Client(
+    endpoint=st.session_state["endpoint_input"],
+    application_key=st.session_state["ak"],
+    application_secret=st.session_state["as"],
+    consumer_key=st.session_state["ck"],
+)
+
+# -----------------------------
+# Select Project
+# -----------------------------
+project = st.selectbox("Public Cloud Project", projects)
+
+# -----------------------------
+# Load Project Config
+# -----------------------------
+@st.cache_data(ttl=300)
+def load_config(endpoint_val, ak, _as, ck, project_id):
+    c = ovh.Client(
+        endpoint=endpoint_val,
+        application_key=ak,
+        application_secret=_as,
+        consumer_key=ck,
+    )
+    regions = c.get(f"/cloud/project/{project_id}/region")
+    flavors = c.get(f"/cloud/project/{project_id}/flavor")
+    images = c.get(f"/cloud/project/{project_id}/image")
+    sshkeys = c.get(f"/cloud/project/{project_id}/sshkey")
+    return regions, flavors, images, sshkeys
+
+try:
+    regions, flavors, images, sshkeys = load_config(
+        st.session_state["endpoint_input"],
+        st.session_state["ak"],
+        st.session_state["as"],
+        st.session_state["ck"],
+        project,
+    )
+except Exception as e:
+    st.error(f"تعذر جلب إعدادات المشروع: {e}")
+    st.stop()
+
+# -----------------------------
+# Deployment Form
+# -----------------------------
+st.subheader("🚀 إعدادات الإنشاء المتعدد")
+
+# 1. اختيار المنطقة أولاً
+region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
+if not region_list:
+    region_list = ["US-EAST-VA-1", "US-WEST-OR-1"]
+
+selected_region = st.selectbox("Region (المنطقة)", region_list)
+
+# 2. فلترة Flavors حسب المنطقة المختارة
+available_flavors = []
+for f in flavors:
+    if isinstance(f, dict):
+        f_region = f.get("region")
+        # فلترة المواصفات المتوفرة في المنطقة المختارة فقط
+        if not f_region or f_region == selected_region:
+            available_flavors.append(f)
+
+flavor_map = {}
+for f in available_flavors:
+    raw_ram = f.get("ram", 0)
+    ram_gb = round(raw_ram / 1024, 1) if raw_ram >= 1024 else raw_ram
+    vcpus = f.get("vcpus", "?")
+    name = f.get("name", "Unknown")
+    label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
+    flavor_map[label] = f
+
+# 3. فلترة الصور حسب المنطقة المختارة
+available_images = []
+for i in images:
+    if isinstance(i, dict):
+        i_region = i.get("region")
+        if not i_region or i_region == selected_region:
+            available_images.append(i)
+
+image_map = {
+    i.get("name", i.get("id", "Unknown")): i 
+    for i in available_images
+}
+
+ssh_map = {
+    s.get("name", s.get("id", "Unknown")): s 
+    for s in sshkeys if isinstance(s, dict)
+}
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if flavor_map:
+        selected_flavor = st.selectbox("Flavor (المواصفات المتوفرة)", list(flavor_map.keys()))
+    else:
+        st.error("لا توجد مواصفات (Flavors) متوفرة في هذه المنطقة!")
+        st.stop()
+        
+    base_name = st.text_input("Prefix Name", value="server")
+    
+    if "def_pass" not in st.session_state:
+        st.session_state["def_pass"] = generate_default_password()
+        
+    custom_password = st.text_input("Password للسيرفرات", value=st.session_state["def_pass"])
+
+with col2:
+    if image_map:
+        selected_image = st.selectbox("Operating System (النظام المتوفر)", list(image_map.keys()))
+    else:
+        st.error("لا توجد أنظمة تشغيل متوفرة في هذه المنطقة!")
+        st.stop()
+        
+    ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
+    selected_ssh = st.selectbox("SSH Key", ssh_options)
+    billing_period = st.selectbox("Billing", ["hourly", "monthly"])
+    os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
+
+st.divider()
+
+num_servers = st.number_input("عدد السيرفرات", min_value=1, max_value=20, value=1)
+create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
+
+# -----------------------------
+# Core Execution Engine
+# -----------------------------
+if create_btn:
+    flv_obj = flavor_map[selected_flavor]
+    img_obj = image_map[selected_image]
+
+    flavor_id = flv_obj.get("id")
+    image_id = img_obj.get("id")
+
+    # جلب أو إنشاء SSH Key
+    target_ssh_id = None
+    if selected_ssh != "تلقائي (Auto Detect)" and selected_ssh in ssh_map:
+        target_ssh_id = ssh_map[selected_ssh].get("id")
+    else:
+        target_ssh_id = get_or_create_ssh_key(client, project)
+
+    cloud_init = f"""#cloud-config
+password: {custom_password}
+chpasswd: {{ expire: False }}
+ssh_pwauth: True
+"""
+
+    progress_bar = st.progress(0)
+    
+    for i in range(int(num_servers)):
+        srv_name = f"{base_name}-0{i+1}" if num_servers > 1 else base_name
+        
+        payload = {
+            "name": srv_name,
+            "region": selected_region,
+            "flavorId": flavor_id,
+            "imageId": image_id,
+            "monthlyBilling": True if billing_period == "monthly" else False,
+            "userData": cloud_init
+        }
+        if target_ssh_id:
+            payload["sshKeyId"] = target_ssh_id
 
         try:
-            zones, plans, os_list = fetch_upcloud_resources(api_token)
-            
-            st.subheader("🚀 Deploy UpCloud Instance")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                selected_os = st.selectbox("Operating System", os_list, format_func=lambda x: x['title'])
-                selected_plan = st.selectbox("Hardware Plan", plans, format_func=lambda x: f"{x['name']} ({x['core_number']} vCPU / {x['memory_amount']}MB RAM)")
-                selected_zones = st.multiselect("Regions / Zones", [z['id'] for z in zones], default=[zones[0]['id']] if zones else [])
+            res = client.post(f"/cloud/project/{project}/instance", **payload)
+            st.success(f"✅ تم إرسال طلب إنشاء {srv_name} بنجاح!")
+        except Exception as e1:
+            try:
+                payload.pop("userData", None)
+                res = client.post(f"/cloud/project/{project}/instance", **payload)
+                st.success(f"✅ تم إنشاء {srv_name} بنجاح (بدون cloud-init)!")
+            except Exception as e2:
+                st.error(f"❌ خطأ من OVH عند إنشاء {srv_name}: {e2}")
 
-            with col2:
-                srv_count = st.number_input("Total Servers Count", min_value=1, max_value=50, value=1)
-                prefix = st.text_input("Hostname Prefix", value="alma-server")
-                disk_size = st.number_input("Disk Size (GB)", min_value=10, value=60)
-                password = st.text_input("Root Password", type="password", value="qRdkWWKIhbb9q6Nmwi3mfrt")
+        progress_bar.progress((i + 1) / int(num_servers))
 
-            if st.button("⚡ Launch & Extract Verified List"):
-                if not selected_zones:
-                    st.error("Please select at least one region.")
-                elif len(password) < 10:
-                    st.error("Password must be at least 10 characters.")
-                else:
-                    progress = st.empty()
-                    created_servers = []
-                    log_messages = []
+        if i < num_servers - 1:
+            time.sleep(PAUSE_DELAY)
 
-                    for i in range(srv_count):
-                        zone = selected_zones[i % len(selected_zones)]
-                        hostname = f"{prefix}-{str(i+1).zfill(2)}"
-                        
-                        payload = {
-                            "server": {
-                                "zone": zone,
-                                "title": hostname,
-                                "hostname": hostname,
-                                "plan": selected_plan["name"],
-                                "metadata": "yes",
-                                "storage_devices": {
-                                    "storage_device": [{
-                                        "action": "clone",
-                                        "storage": selected_os["uuid"],
-                                        "title": f"{hostname}-disk",
-                                        "size": disk_size,
-                                        "tier": "standard" if selected_plan["name"].startswith("DEV-") else "maxiops"
-                                    }]
-                                }
-                            }
-                        }
-                        
-                        try:
-                            res = upcloud_req(api_token, "/server", method="POST", payload=payload)
-                            s_uuid = res.get("server", {}).get("uuid")
-                            created_servers.append(s_uuid)
-                            log_messages.append(f"✅ Created {hostname} ({zone}) -> {s_uuid}")
-                        except Exception as err:
-                            log_messages.append(f"❌ Failed {hostname}: {err}")
-                        
-                        progress.code("\n".join(log_messages))
-                        time.sleep(0.5)
+    st.balloons()
+    st.session_state["last_created_pass"] = custom_password
+    st.session_state["last_created_user"] = os_user
 
-                    # ---------------------------------------------------------
-                    # SSH Checking & Filtering (ONLY GOOD SERVERS)
-                    # ---------------------------------------------------------
-                    st.info("⏳ Waiting for servers to initialize and Port 22 (SSH) to become ACTIVE...")
-                    
-                    good_servers = []
-                    status_placeholder = st.empty()
+# -----------------------------
+# List Active Instances & Format Output
+# -----------------------------
+st.divider()
+st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
 
-                    for idx, s_uuid in enumerate(created_servers):
-                        status_placeholder.text(f"Checking server {idx+1}/{len(created_servers)}...")
-                        active_ip = None
-                        
-                        # Retries to catch Public IP and check Port 22 readiness
-                        for attempt in range(20):
-                            time.sleep(5)
-                            try:
-                                details = upcloud_req(api_token, f"/server/{s_uuid}").get("server", {})
-                                ips = details.get("ip_addresses", {}).get("ip_address", [])
-                                pub_ip = next((ip["address"] for ip in ips if ip.get("access") == "public" and ":" not in ip.get("address")), None)
-                                
-                                if pub_ip:
-                                    # Verify Port 22 SSH Connection is live
-                                    if check_ssh_port(pub_ip):
-                                        active_ip = pub_ip
-                                        break
-                            except:
-                                pass
-                        
-                        if active_ip:
-                            # Append directly in exact string format
-                            good_servers.append(f"{active_ip},22,root,{password}")
+try:
+    instances = client.get(f"/cloud/project/{project}/instance")
+    if not instances:
+        st.info("لا توجد سيرفرات حالياً.")
+    else:
+        formatted_list = []
+        saved_pass = st.session_state.get("last_created_pass", custom_password)
+        saved_user = st.session_state.get("last_created_user", "ubuntu")
 
-                    status_placeholder.empty()
+        for inst in instances:
+            iid = inst.get("id")
+            name = inst.get("name")
+            status = inst.get("status")
+            reg = inst.get("region")
+            ip_addresses = inst.get("ipAddresses", [])
 
-                    # Render Section like image mockup
-                    st.markdown("---")
-                    st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
-                    
-                    if good_servers:
-                        st.success("إبنجاح تم إنشاء و فحص جميع السيرفرات!")
-                        formatted_output = "\n".join(good_servers)
-                        
-                        st.markdown("**:موحد Format نسخ كل السيرفرات بـ**")
-                        st.caption("جاهزة للنسخ المباشر:")
-                        st.text_area("", value=formatted_output, height=180)
-                    else:
-                        st.error("لم يتم التأكد من جاهزية Port 22 للسيرفرات. المرجو المحاولة لاحقاً.")
+            public_ip = "جاري الجلب..."
+            for ip_info in ip_addresses:
+                if isinstance(ip_info, dict) and ip_info.get("type") == "public":
+                    public_ip = ip_info.get("ip")
+                    break
+                elif isinstance(ip_info, dict) and "ip" in ip_info:
+                    public_ip = ip_info.get("ip")
 
-        except Exception as e:
-            st.error(f"Configuration error: {e}")
+            formatted_entry = f"{public_ip} | {saved_user} | {saved_pass}"
+            formatted_list.append(formatted_entry)
 
-elif provider == "OVHcloud":
-    st.sidebar.subheader("OVH Credentials")
-    ovh_endpoint = st.sidebar.selectbox("Endpoint", ["ovh-eu", "ovh-us", "ca-ovh"])
-    app_key = st.sidebar.text_input("Application Key", type="password")
-    app_secret = st.sidebar.text_input("Application Secret", type="password")
-    consumer_key = st.sidebar.text_input("Consumer Key", type="password")
-    
-    if st.sidebar.button("Connect OVH"):
-        st.info("Ensure Application Key, Secret & Consumer Key are correctly generated for OVH API.")
+            with st.container(border=True):
+                col_a, col_b, col_c = st.columns([3, 2, 1])
+                with col_a:
+                    st.write(f"**{name}** (`{iid}`)")
+                    st.code(formatted_entry, language="text")
+                with col_b:
+                    st.write(f"Region: {reg} | Status: **{status}**")
+                with col_c:
+                    if st.button("🗑️ مسح", key=f"del_{iid}"):
+                        client.delete(f"/cloud/project/{project}/instance/{iid}")
+                        st.success(f"تم مسح {name}")
+                        time.sleep(1)
+                        st.rerun()
+
+        st.subheader("📋 نسخ كل السيرفرات بـ Format موحد:")
+        st.text_area(
+            "جاهزة للنسخ المباشر:",
+            value="\n".join(formatted_list),
+            height=150
+        )
+
+except Exception as e:
+    st.error(f"تعذر جلب السيرفرات: {e}")
