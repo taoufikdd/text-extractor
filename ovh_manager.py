@@ -15,7 +15,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (Root, Password & Open Ports)")
+st.title("⚡ OVHcloud Multi-Server Deployer (Root & Password Enabled)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
@@ -29,7 +29,7 @@ def check_ssh_port(ip, port=22, timeout=3):
         result = sock.connect_ex((ip, int(port)))
         sock.close()
         return result == 0
-    except Exception:
+    except:
         return False
 
 PAUSE_DELAY = 5
@@ -180,7 +180,7 @@ with col1:
     if flavor_map:
         selected_flavor = st.selectbox("Flavor (المواصفات المتوفرة)", list(flavor_map.keys()))
     else:
-        st.error("لا توجد مواصفات متوفرة في هذه المنطقة!")
+        st.error("لا توجد مواصفات متوفرة f هذه المنطقة!")
         st.stop()
         
     base_name = st.text_input("Prefix Name", value="server")
@@ -194,7 +194,7 @@ with col2:
     if image_map:
         selected_image = st.selectbox("Operating System", list(image_map.keys()))
     else:
-        st.error("لا توجد أنظمة تشغيل متوفرة في هذه المنطقة!")
+        st.error("لا توجد أنظمة تشغيل متوفرة f هذه المنطقة!")
         st.stop()
         
     ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
@@ -222,7 +222,7 @@ if create_btn:
     else:
         target_ssh_id = get_or_create_ssh_key(client, project)
 
-    # Cloud-init for Root Auth, Password Auth, and Mail Outbound Ports (587, 25, 465)
+    # Cloud-init to enable Root Login & Password Auth in OVH
     cloud_init = f"""#cloud-config
 disable_root: false
 ssh_pwauth: true
@@ -232,22 +232,10 @@ chpasswd:
   list: |
     root:{custom_password}
   expire: False
-bootcmd:
-  - echo "root:{custom_password}" | chpasswd
-  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
 runcmd:
-  - echo "root:{custom_password}" | chpasswd
   - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
   - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
   - systemctl restart ssh || systemctl restart sshd
-  - iptables -F
-  - iptables -A OUTPUT -p tcp --dport 587 -j ACCEPT
-  - iptables -A OUTPUT -p tcp --dport 25 -j ACCEPT
-  - iptables -A OUTPUT -p tcp --dport 465 -j ACCEPT
-  - ufw disable || true
-  - systemctl stop firewalld || true
-  - systemctl disable firewalld || true
 """
 
     progress_bar = st.progress(0)
@@ -324,7 +312,7 @@ try:
                     formatted_entry = f"{public_ip},22,root,{saved_pass}"
                     good_servers_list.append(formatted_entry)
                 else:
-                    formatted_entry = f"جاري التهيئة (SSH Port 22 Closed) | {public_ip}"
+                    formatted_entry = f"جاري التهيئية (SSH Port 22 Closed) | {public_ip}"
             else:
                 formatted_entry = "جاري الجلب..."
 
