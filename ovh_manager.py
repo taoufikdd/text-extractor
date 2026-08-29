@@ -6,19 +6,22 @@ import string
 import subprocess
 import socket
 
+# ---------------------------------------------------------
+# Page Config
+# ---------------------------------------------------------
 st.set_page_config(
     page_title="OVHcloud Multi-Server Deployer",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (SSH Ready Filter)")
+st.title("⚡ OVHcloud Multi-Server Deployer (Root & Password Enabled)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
     return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
 
-# Function bash ncheckiw wach Port 22 SSH wajd
+# Function bash ncheckiw Port 22 SSH واش شغال
 def check_ssh_port(ip, port=22, timeout=3):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -155,12 +158,7 @@ if not region_list:
 
 selected_region = st.selectbox("Region (المنطقة)", region_list)
 
-available_flavors = []
-for f in flavors:
-    if isinstance(f, dict):
-        f_region = f.get("region")
-        if not f_region or f_region == selected_region:
-            available_flavors.append(f)
+available_flavors = [f for f in flavors if isinstance(f, dict) and (not f.get("region") or f.get("region") == selected_region)]
 
 flavor_map = {}
 for f in available_flavors:
@@ -171,22 +169,10 @@ for f in available_flavors:
     label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
     flavor_map[label] = f
 
-available_images = []
-for i in images:
-    if isinstance(i, dict):
-        i_region = i.get("region")
-        if not i_region or i_region == selected_region:
-            available_images.append(i)
+available_images = [i for i in images if isinstance(i, dict) and (not i.get("region") or i.get("region") == selected_region)]
 
-image_map = {
-    i.get("name", i.get("id", "Unknown")): i 
-    for i in available_images
-}
-
-ssh_map = {
-    s.get("name", s.get("id", "Unknown")): s 
-    for s in sshkeys if isinstance(s, dict)
-}
+image_map = {i.get("name", i.get("id", "Unknown")): i for i in available_images}
+ssh_map = {s.get("name", s.get("id", "Unknown")): s for s in sshkeys if isinstance(s, dict)}
 
 col1, col2 = st.columns(2)
 
@@ -194,7 +180,7 @@ with col1:
     if flavor_map:
         selected_flavor = st.selectbox("Flavor (المواصفات المتوفرة)", list(flavor_map.keys()))
     else:
-        st.error("لا توجد مواصفات (Flavors) متوفرة في هذه المنطقة!")
+        st.error("لا توجد مواصفات متوفرة f هذه المنطقة!")
         st.stop()
         
     base_name = st.text_input("Prefix Name", value="server")
@@ -206,15 +192,14 @@ with col1:
 
 with col2:
     if image_map:
-        selected_image = st.selectbox("Operating System (النظام المتوفر)", list(image_map.keys()))
+        selected_image = st.selectbox("Operating System", list(image_map.keys()))
     else:
-        st.error("لا توجد أنظمة تشغيل متوفرة في هذه المنطقة!")
+        st.error("لا توجد أنظمة تشغيل متوفرة f هذه المنطقة!")
         st.stop()
         
     ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
     selected_ssh = st.selectbox("SSH Key", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
-    os_user = st.text_input("اسم المستخدم (Username)", value="root")
 
 st.divider()
 
@@ -237,10 +222,20 @@ if create_btn:
     else:
         target_ssh_id = get_or_create_ssh_key(client, project)
 
+    # Cloud-init to enable Root Login & Password Auth in OVH
     cloud_init = f"""#cloud-config
+disable_root: false
+ssh_pwauth: true
+permit_root_login: true
 password: {custom_password}
-chpasswd: {{ expire: False }}
-ssh_pwauth: True
+chpasswd:
+  list: |
+    root:{custom_password}
+  expire: False
+runcmd:
+  - sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  - systemctl restart ssh || systemctl restart sshd
 """
 
     progress_bar = st.progress(0)
@@ -277,10 +272,9 @@ ssh_pwauth: True
 
     st.balloons()
     st.session_state["last_created_pass"] = custom_password
-    st.session_state["last_created_user"] = os_user
 
 # -----------------------------
-# List Active Instances & Verified Format Output
+# List Active Instances & Format Output
 # -----------------------------
 st.divider()
 st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
@@ -292,7 +286,6 @@ try:
     else:
         good_servers_list = []
         saved_pass = st.session_state.get("last_created_pass", custom_password)
-        saved_user = st.session_state.get("last_created_user", os_user)
 
         status_msg = st.empty()
         status_msg.info("🔍 جاري التحقق من جاهزية Port 22 SSH للسيرفرات...")
@@ -312,15 +305,14 @@ try:
                 elif isinstance(ip_info, dict) and "ip" in ip_info:
                     public_ip = ip_info.get("ip")
 
-            # Check SSH status: ykoun Public IP kayn + Port 22 OPEN
             is_ready = False
-            if public_ip and public_ip != "جاري الجلب...":
+            if public_ip:
                 if check_ssh_port(public_ip, port=22):
                     is_ready = True
-                    formatted_entry = f"{public_ip},22,{saved_user},{saved_pass}"
+                    formatted_entry = f"{public_ip},22,root,{saved_pass}"
                     good_servers_list.append(formatted_entry)
                 else:
-                    formatted_entry = f"جاري الجلب... (SSH 22 Closed) | {public_ip}"
+                    formatted_entry = f"جاري التهيئية (SSH Port 22 Closed) | {public_ip}"
             else:
                 formatted_entry = "جاري الجلب..."
 
@@ -349,7 +341,7 @@ try:
                 height=150
             )
         else:
-            st.warning("ما زالت السيرفرات قيد التشغيل (Port 22 SSH غير جاهز بعد). يرجى إعادة تحديث الصفحة بعد قليل.")
+            st.warning("السيرفرات ما زالت تحت التشغيل أو SSH غير جاهز بعد. أعد تحديث الصفحة بعد بضع ثوانٍ.")
 
 except Exception as e:
     st.error(f"تعذر جلب السيرفرات: {e}")
