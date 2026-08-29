@@ -1,6 +1,8 @@
 import streamlit as st
 import ovh
 import time
+import random
+import string
 
 st.set_page_config(
     page_title="OVHcloud Deployer",
@@ -9,6 +11,11 @@ st.set_page_config(
 )
 
 st.title("⚡ OVHcloud Multi-Server Deployer")
+
+# دالة لتوليد كلمة سر قوية افتراضية
+def generate_default_password():
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    return "P@ss_" + "".join(random.choices(chars, k=10))
 
 # -----------------------------
 # Sidebar: Credentials
@@ -135,11 +142,15 @@ with col1:
     selected_region = st.selectbox("Region (المنطقة)", region_list if region_list else ["GRA7"])
     selected_flavor = st.selectbox("Flavor (المواصفات)", list(flavor_map.keys()))
     base_name = st.text_input("Prefix Name", value="server")
-    custom_password = st.text_input("Password للسيرفرات", value="MyP@ssword2026!", type="password")
+    
+    if "def_pass" not in st.session_state:
+        st.session_state["def_pass"] = generate_default_password()
+        
+    custom_password = st.text_input("Password للسيرفرات (افتراضي مجهز)", value=st.session_state["def_pass"])
 
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
-    selected_ssh = st.selectbox("SSH Key (اختياري مع الباسورد)", ["بدون SSH Key"] + list(ssh_map.keys()))
+    selected_ssh = st.selectbox("SSH Key (اختياري)", ["بدون SSH Key"] + list(ssh_map.keys()))
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
@@ -149,7 +160,14 @@ c3, c4 = st.columns(2)
 with c3:
     num_servers = st.number_input("عدد السيرفرات (Number of servers)", min_value=1, max_value=20, value=1)
 with c4:
-    pause_sec = st.number_input("المدة الزمنية بين كل سيرفر وسيرفر (بالثواني)", min_value=0, max_value=60, value=2)
+    # القيمة الافتراضية 5 ثواني وهي الوقت المثالي لـ OVH Cloud
+    pause_sec = st.number_input(
+        "المدة الزمنية بين كل سيرفر وسيرفر (افتراضي مثالي: 5 ثواني)",
+        min_value=0, 
+        max_value=60, 
+        value=5,
+        help="5 ثواني هي أفضل مدة لضمان عدم رفض الطلبات المتتالية من طرف OVH"
+    )
 
 create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
 
@@ -160,7 +178,7 @@ if create_btn:
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
     
-    # إعداد Cloud-Init لتعيين كلمة السر والتمكين من الدخول بها عبر SSH
+    # Cloud-Init script
     user_data_script = f"""#cloud-config
 chpasswd:
   list: |
@@ -196,17 +214,14 @@ ssh_pwauth: True
         except Exception as e:
             st.error(f"❌ خطأ في إنشاء {srv_name}: {e}")
 
-        # Update progress
         progress_bar.progress((i + 1) / int(num_servers))
 
-        # Pause delay
         if i < num_servers - 1 and pause_sec > 0:
             st.write(f"⏳ الانتظار لمدة {pause_sec} ثواني قبل السيرفر القادم...")
             time.sleep(pause_sec)
 
     st.balloons()
     
-    # حفظ كلمة السر المستعملة في الجلسة لعرضها
     st.session_state["last_created_pass"] = custom_password
     st.session_state["last_created_user"] = os_user
 
@@ -232,7 +247,6 @@ try:
             reg = inst.get("region")
             ip_addresses = inst.get("ipAddresses", [])
 
-            # استخراج IP الخارجي
             public_ip = "جاري الجلب..."
             for ip_info in ip_addresses:
                 if isinstance(ip_info, dict) and ip_info.get("type") == "public":
@@ -258,7 +272,6 @@ try:
                         time.sleep(1)
                         st.rerun()
 
-        # إظهار جميع السيرفرات في مربع نصي واحد للنسخ السريع
         st.subheader("📋 نسخ كل السيرفرات بـ Format موحد:")
         st.text_area(
             "جاهزة للنسخ المباشر:",
