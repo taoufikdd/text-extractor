@@ -4,6 +4,7 @@ import time
 import random
 import string
 import subprocess
+import socket
 
 st.set_page_config(
     page_title="OVHcloud Multi-Server Deployer",
@@ -11,11 +12,22 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer (Region-Filtered Fix)")
+st.title("⚡ OVHcloud Multi-Server Deployer (SSH Ready Filter)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
     return "P@ss" + "".join(random.choices(chars, k=8)) + "!"
+
+# Function bash ncheckiw wach Port 22 SSH wajd
+def check_ssh_port(ip, port=22, timeout=3):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        result = sock.connect_ex((ip, int(port)))
+        sock.close()
+        return result == 0
+    except:
+        return False
 
 PAUSE_DELAY = 5
 
@@ -137,19 +149,16 @@ except Exception as e:
 # -----------------------------
 st.subheader("🚀 إعدادات الإنشاء المتعدد")
 
-# 1. اختيار المنطقة أولاً
 region_list = [r.get("name") or r.get("region") if isinstance(r, dict) else str(r) for r in regions]
 if not region_list:
     region_list = ["US-EAST-VA-1", "US-WEST-OR-1"]
 
 selected_region = st.selectbox("Region (المنطقة)", region_list)
 
-# 2. فلترة Flavors حسب المنطقة المختارة
 available_flavors = []
 for f in flavors:
     if isinstance(f, dict):
         f_region = f.get("region")
-        # فلترة المواصفات المتوفرة في المنطقة المختارة فقط
         if not f_region or f_region == selected_region:
             available_flavors.append(f)
 
@@ -162,7 +171,6 @@ for f in available_flavors:
     label = f"{name} | {vcpus} vCPU | {ram_gb} GB"
     flavor_map[label] = f
 
-# 3. فلترة الصور حسب المنطقة المختارة
 available_images = []
 for i in images:
     if isinstance(i, dict):
@@ -206,7 +214,7 @@ with col2:
     ssh_options = ["تلقائي (Auto Detect)"] + list(ssh_map.keys())
     selected_ssh = st.selectbox("SSH Key", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
-    os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
+    os_user = st.text_input("اسم المستخدم (Username)", value="root")
 
 st.divider()
 
@@ -223,7 +231,6 @@ if create_btn:
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
 
-    # جلب أو إنشاء SSH Key
     target_ssh_id = None
     if selected_ssh != "تلقائي (Auto Detect)" and selected_ssh in ssh_map:
         target_ssh_id = ssh_map[selected_ssh].get("id")
@@ -273,7 +280,7 @@ ssh_pwauth: True
     st.session_state["last_created_user"] = os_user
 
 # -----------------------------
-# List Active Instances & Format Output
+# List Active Instances & Verified Format Output
 # -----------------------------
 st.divider()
 st.subheader("🖥️ قائمة السيرفرات الجاهزة وتنسيق البيانات (Format)")
@@ -283,9 +290,12 @@ try:
     if not instances:
         st.info("لا توجد سيرفرات حالياً.")
     else:
-        formatted_list = []
+        good_servers_list = []
         saved_pass = st.session_state.get("last_created_pass", custom_password)
-        saved_user = st.session_state.get("last_created_user", "ubuntu")
+        saved_user = st.session_state.get("last_created_user", os_user)
+
+        status_msg = st.empty()
+        status_msg.info("🔍 جاري التحقق من جاهزية Port 22 SSH للسيرفرات...")
 
         for inst in instances:
             iid = inst.get("id")
@@ -294,7 +304,7 @@ try:
             reg = inst.get("region")
             ip_addresses = inst.get("ipAddresses", [])
 
-            public_ip = "جاري الجلب..."
+            public_ip = None
             for ip_info in ip_addresses:
                 if isinstance(ip_info, dict) and ip_info.get("type") == "public":
                     public_ip = ip_info.get("ip")
@@ -302,8 +312,17 @@ try:
                 elif isinstance(ip_info, dict) and "ip" in ip_info:
                     public_ip = ip_info.get("ip")
 
-            formatted_entry = f"{public_ip} | {saved_user} | {saved_pass}"
-            formatted_list.append(formatted_entry)
+            # Check SSH status: ykoun Public IP kayn + Port 22 OPEN
+            is_ready = False
+            if public_ip and public_ip != "جاري الجلب...":
+                if check_ssh_port(public_ip, port=22):
+                    is_ready = True
+                    formatted_entry = f"{public_ip},22,{saved_user},{saved_pass}"
+                    good_servers_list.append(formatted_entry)
+                else:
+                    formatted_entry = f"جاري الجلب... (SSH 22 Closed) | {public_ip}"
+            else:
+                formatted_entry = "جاري الجلب..."
 
             with st.container(border=True):
                 col_a, col_b, col_c = st.columns([3, 2, 1])
@@ -311,7 +330,8 @@ try:
                     st.write(f"**{name}** (`{iid}`)")
                     st.code(formatted_entry, language="text")
                 with col_b:
-                    st.write(f"Region: {reg} | Status: **{status}**")
+                    ssh_badge = "🟢 Ready (Port 22)" if is_ready else "🟡 Booting..."
+                    st.write(f"Region: {reg} | Status: **{status}** | SSH: **{ssh_badge}**")
                 with col_c:
                     if st.button("🗑️ مسح", key=f"del_{iid}"):
                         client.delete(f"/cloud/project/{project}/instance/{iid}")
@@ -319,12 +339,17 @@ try:
                         time.sleep(1)
                         st.rerun()
 
-        st.subheader("📋 نسخ كل السيرفرات بـ Format موحد:")
-        st.text_area(
-            "جاهزة للنسخ المباشر:",
-            value="\n".join(formatted_list),
-            height=150
-        )
+        status_msg.empty()
+
+        st.subheader("📋 موحد Format نسخ كل السيرفرات بـ:")
+        if good_servers_list:
+            st.text_area(
+                "جاهزة للنسخ المباشر (Good Servers Only):",
+                value="\n".join(good_servers_list),
+                height=150
+            )
+        else:
+            st.warning("ما زالت السيرفرات قيد التشغيل (Port 22 SSH غير جاهز بعد). يرجى إعادة تحديث الصفحة بعد قليل.")
 
 except Exception as e:
     st.error(f"تعذر جلب السيرفرات: {e}")
