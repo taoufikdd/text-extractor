@@ -6,12 +6,12 @@ import string
 import subprocess
 
 st.set_page_config(
-    page_title="OVHcloud Deployer Fix",
+    page_title="OVHcloud Deployer Final Fix",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ OVHcloud Multi-Server Deployer")
+st.title("⚡ OVHcloud Multi-Server Deployer (Ultimate Fix)")
 
 def generate_default_password():
     chars = string.ascii_letters + string.digits
@@ -20,13 +20,12 @@ def generate_default_password():
 PAUSE_DELAY = 5
 
 def get_or_create_ssh_key(client, project_id):
-    """جلب أو إنشاء SSH Key تلقائياً لحل مشكل OVH US"""
+    """جلب أو إنشاء SSH Key تلقائياً"""
     try:
         keys = client.get(f"/cloud/project/{project_id}/sshkey")
         if keys:
             return keys[0].get("id")
         
-        # محاولة إنشاء مفتاح عبر OpenSSL التابع للنظام
         res = subprocess.run(
             ["ssh-keygen", "-t", "rsa", "-b", "2048", "-N", "", "-f", "/tmp/ovh_tmp_key"],
             capture_output=True, text=True
@@ -193,9 +192,18 @@ if create_btn:
     img_obj = image_map[selected_image]
 
     flavor_id = flv_obj.get("id")
-    image_id = img_obj.get("id")
+    primary_image_id = img_obj.get("id")
 
-    # تحديد SSH Key
+    # البحث عن صورة احتياطية (Ubuntu) في حال فشل النظام المختار
+    fallback_image_id = None
+    for img_name, img_data in image_map.items():
+        if "ubuntu" in img_name.lower() and "22.04" in img_name.lower():
+            fallback_image_id = img_data.get("id")
+            break
+    if not fallback_image_id and images:
+        fallback_image_id = images[0].get("id")
+
+    # جلب SSH Key
     target_ssh_id = None
     if selected_ssh != "تلقائي (Auto Detect)" and selected_ssh in ssh_map:
         target_ssh_id = ssh_map[selected_ssh].get("id")
@@ -213,15 +221,15 @@ ssh_pwauth: True
     for i in range(int(num_servers)):
         srv_name = f"{base_name}-0{i+1}" if num_servers > 1 else base_name
         
-        # تجهيز المحاولات المختلفة لتفادي 500 Internal Error
+        # قائمة تجارب بالترتيب المضمون
         attempts = []
         
-        # 1. طلب كامل مع SSH و userData
+        # 1. النظام المختار + cloud-init + SSH
         p1 = {
             "name": srv_name,
             "region": selected_region,
             "flavorId": flavor_id,
-            "imageId": image_id,
+            "imageId": primary_image_id,
             "monthlyBilling": True if billing_period == "monthly" else False,
             "userData": cloud_init
         }
@@ -229,20 +237,16 @@ ssh_pwauth: True
             p1["sshKeyId"] = target_ssh_id
         attempts.append(p1)
 
-        # 2. طلب بدون userData
+        # 2. النظام المختار بدقة وبدون userData
         p2 = p1.copy()
         p2.pop("userData", None)
         attempts.append(p2)
 
-        # 3. طلب أدنى صافي (Bare minimum)
-        p3 = {
-            "name": srv_name,
-            "region": selected_region,
-            "flavorId": flavor_id,
-            "imageId": image_id,
-            "monthlyBilling": False
-        }
-        attempts.append(p3)
+        # 3. Fallback: تجربة صورة Ubuntu المستقرة إذا رُفض النظام الأول
+        if fallback_image_id and fallback_image_id != primary_image_id:
+            p3 = p1.copy()
+            p3["imageId"] = fallback_image_id
+            attempts.append(p3)
 
         success = False
         last_err = ""
@@ -250,7 +254,7 @@ ssh_pwauth: True
         for idx, p in enumerate(attempts):
             try:
                 res = client.post(f"/cloud/project/{project}/instance", **p)
-                st.success(f"✅ تم إنشاء {srv_name} بنجاح! (المحاولة {idx+1})")
+                st.success(f"✅ تم إنشاء {srv_name} بنجاح!")
                 success = True
                 break
             except Exception as e:
@@ -258,7 +262,7 @@ ssh_pwauth: True
                 continue
 
         if not success:
-            st.error(f"❌ فشل إنشاء {srv_name}. السبب: {last_err}")
+            st.error(f"❌ فشل إنشاء {srv_name}. خطأ OVH: {last_err}")
 
         progress_bar.progress((i + 1) / int(num_servers))
 
