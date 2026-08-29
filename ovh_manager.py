@@ -16,7 +16,6 @@ st.title("⚡ OVHcloud Multi-Server Deployer")
 with st.sidebar:
     st.header("🔑 مفاتيح OVH API")
 
-    # إضافة ovh-us واختيارها كـ افتراضية
     endpoint = st.selectbox(
         "Endpoint",
         ["ovh-us", "ovh-eu", "ovh-ca"],
@@ -51,7 +50,7 @@ if connect:
         st.error(f"فشل الاتصال: {e}")
 
 if not st.session_state.get("connected"):
-    st.info("أدخل المفاتيح في القائمة الجانبية واضغط Connect (تأكد من اختيار ovh-us).")
+    st.info("أدخل المفاتيح في القائمة الجانبية واضغط Connect.")
     st.stop()
 
 projects = st.session_state.get("projects", [])
@@ -100,11 +99,31 @@ except Exception as e:
     st.error(f"تعذر جلب إعدادات المشروع: {e}")
     st.stop()
 
-# Format maps
-region_map = {r.get("name", r.get("region")): r for r in regions}
-flavor_map = {f"{f.get('name')} | {f.get('vcpus', '?')} vCPU | {f.get('ram', '?')}MB": f for f in flavors}
-image_map = {i.get("name", i.get("id")): i for i in images}
-ssh_map = {s.get("name", s.get("id")): s for s in sshkeys}
+# -----------------------------
+# Safe Format Maps (تطوير المعالجة لتفادي الأخطاء)
+# -----------------------------
+# معالجة المناطق سواء كانت strings أو dicts
+region_list = []
+for r in regions:
+    if isinstance(r, dict):
+        region_list.append(r.get("name") or r.get("region") or str(r))
+    else:
+        region_list.append(str(r))
+
+flavor_map = {
+    f"{f.get('name', 'Unknown')} | {f.get('vcpus', '?')} vCPU | {f.get('ram', '?')}MB": f 
+    for f in flavors if isinstance(f, dict)
+}
+
+image_map = {
+    i.get("name", i.get("id", "Unknown")): i 
+    for i in images if isinstance(i, dict)
+}
+
+ssh_map = {
+    s.get("name", s.get("id", "Unknown")): s 
+    for s in sshkeys if isinstance(s, dict)
+}
 
 # -----------------------------
 # Deployment Form
@@ -114,7 +133,7 @@ st.subheader("🚀 إعدادات الإنشاء المتعدد")
 col1, col2 = st.columns(2)
 
 with col1:
-    selected_region = st.selectbox("Region (المنطقة)", list(region_map.keys()))
+    selected_region = st.selectbox("Region (المنطقة)", region_list if region_list else ["GRA7"])
     selected_flavor = st.selectbox("Flavor (المواصفات)", list(flavor_map.keys()))
     base_name = st.text_input("Prefix Name", value="server")
 
@@ -138,12 +157,10 @@ if create_btn:
         st.error("خاصك تكون ضايف SSH Key فـ لوحة OVH قبل ما تكرّيي السيرفر.")
         st.stop()
 
-    reg_obj = region_map[selected_region]
     flv_obj = flavor_map[selected_flavor]
     img_obj = image_map[selected_image]
     ssh_obj = ssh_map[selected_ssh]
 
-    region_code = reg_obj.get("name") or reg_obj.get("region")
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
     ssh_id = ssh_obj.get("id")
@@ -155,7 +172,7 @@ if create_btn:
         
         payload = {
             "name": srv_name,
-            "region": region_code,
+            "region": selected_region,
             "flavorId": flavor_id,
             "imageId": image_id,
             "sshKeyId": ssh_id,
