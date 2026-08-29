@@ -12,10 +12,13 @@ st.set_page_config(
 
 st.title("⚡ OVHcloud Multi-Server Deployer")
 
-# دالة لتوليد كلمة سر قوية افتراضية
+# Function to generate a default password
 def generate_default_password():
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     return "P@ss_" + "".join(random.choices(chars, k=10))
+
+# Hidden background delay between server deployments (in seconds)
+PAUSE_DELAY = 5
 
 # -----------------------------
 # Sidebar: Credentials
@@ -146,28 +149,19 @@ with col1:
     if "def_pass" not in st.session_state:
         st.session_state["def_pass"] = generate_default_password()
         
-    custom_password = st.text_input("Password للسيرفرات (افتراضي مجهز)", value=st.session_state["def_pass"])
+    custom_password = st.text_input("Password للسيرفرات", value=st.session_state["def_pass"])
 
 with col2:
     selected_image = st.selectbox("Operating System (النظام)", list(image_map.keys()))
-    selected_ssh = st.selectbox("SSH Key (اختياري)", ["بدون SSH Key"] + list(ssh_map.keys()))
+    
+    ssh_options = ["بدون SSH Key"] + list(ssh_map.keys())
+    selected_ssh = st.selectbox("SSH Key (اختر مفتاحاً إذا توفر)", ssh_options)
     billing_period = st.selectbox("Billing", ["hourly", "monthly"])
     os_user = st.text_input("اسم المستخدم (Username)", value="ubuntu")
 
 st.divider()
 
-c3, c4 = st.columns(2)
-with c3:
-    num_servers = st.number_input("عدد السيرفرات (Number of servers)", min_value=1, max_value=20, value=1)
-with c4:
-    # القيمة الافتراضية 5 ثواني وهي الوقت المثالي لـ OVH Cloud
-    pause_sec = st.number_input(
-        "المدة الزمنية بين كل سيرفر وسيرفر (افتراضي مثالي: 5 ثواني)",
-        min_value=0, 
-        max_value=60, 
-        value=5,
-        help="5 ثواني هي أفضل مدة لضمان عدم رفض الطلبات المتتالية من طرف OVH"
-    )
+num_servers = st.number_input("عدد السيرفرات (Number of servers)", min_value=1, max_value=20, value=1)
 
 create_btn = st.button("🚀 بدء إنشاء السيرفرات", type="primary", use_container_width=True)
 
@@ -178,7 +172,7 @@ if create_btn:
     flavor_id = flv_obj.get("id")
     image_id = img_obj.get("id")
     
-    # Cloud-Init script
+    # Cloud-Init script لتعيين كلمة السر والدخول عبر SSH
     user_data_script = f"""#cloud-config
 chpasswd:
   list: |
@@ -196,6 +190,7 @@ ssh_pwauth: True
         "userData": user_data_script,
     }
 
+    # إضافة sshKeyId فقط إذا تم اختياره من القائمة
     if selected_ssh != "بدون SSH Key" and selected_ssh in ssh_map:
         payload_base["sshKeyId"] = ssh_map[selected_ssh].get("id")
 
@@ -216,9 +211,8 @@ ssh_pwauth: True
 
         progress_bar.progress((i + 1) / int(num_servers))
 
-        if i < num_servers - 1 and pause_sec > 0:
-            st.write(f"⏳ الانتظار لمدة {pause_sec} ثواني قبل السيرفر القادم...")
-            time.sleep(pause_sec)
+        if i < num_servers - 1:
+            time.sleep(PAUSE_DELAY)
 
     st.balloons()
     
