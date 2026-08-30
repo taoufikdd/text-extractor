@@ -1,15 +1,15 @@
-import streamlit as st
-import requests
-import pandas as pd
+import io
 import json
 import re
-import io
-import zipfile
 import tarfile
-import gzip
-import urllib3
-from urllib.parse import urljoin
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+
+import pandas as pd
+import requests
+import streamlit as st
+import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -24,7 +24,7 @@ def get_session():
     s.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                       "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-        "Accept": "*/*",
+        "Accept": "application/json, text/plain, */*",
     })
     return s
 
@@ -64,7 +64,7 @@ def extract_urls(obj):
             if isinstance(v, str):
                 if v.startswith(("http://", "https://")) and (
                     "url" in kl or "download" in kl or "file" in kl or
-                    "location" in kl or "suppression" in kl
+                    "location" in kl or "suppression" in kl or "link" in kl
                 ):
                     found.append(v)
             elif isinstance(v, (dict, list)):
@@ -103,17 +103,15 @@ def extract_suppression_info(offer):
 
     urls = extract_urls(offer)
 
-    # Keep URLs that look relevant to a suppression/file download.
     relevant = []
     for u in urls:
         ul = u.lower()
         if any(x in ul for x in [
             "suppression", "download", ".zip", ".rar", ".7z",
-            ".gz", ".csv", ".txt"
+            "optizmo", "unsub", "ezdownload", ".gz", ".csv", ".txt"
         ]):
             relevant.append(u)
 
-    # Also inspect serialized offer for direct archive URLs.
     try:
         raw = json.dumps(offer)
         direct = re.findall(
@@ -189,7 +187,6 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
                 except Exception:
                     pass
 
-    # Deduplicate offers by ID while preserving order.
     seen = set()
     unique = []
     for offer in all_offers:
@@ -211,7 +208,6 @@ def detect_extension(response, url=""):
     head = response.content[:16]
     combined = f"{ct} {cd} {url.lower()}"
 
-    # Magic bytes are more reliable than headers.
     if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06") or head.startswith(b"PK\x07\x08"):
         return "zip"
     if head.startswith(b"Rar!\x1a\x07"):
@@ -235,16 +231,10 @@ def looks_like_archive_or_file(response):
     if ext in {"zip", "rar", "7z", "gz", "csv", "txt"}:
         return True
 
-    # Some servers return application/octet-stream without a useful filename.
     ct = response.headers.get("Content-Type", "").lower()
     return "octet-stream" in ct and len(response.content) > 20
 
 def download_file_bytes(offer_id, suppression_id, direct_urls, headers):
-    """
-    Download using URLs actually exposed by the offer first.
-    Only use API fallback endpoints if no direct file URL works.
-    Handles JSON indirection and redirects.
-    """
     session = get_session()
     diagnostics = []
 
@@ -256,11 +246,26 @@ def download_file_bytes(offer_id, suppression_id, direct_urls, headers):
         if u and u.startswith(("http://", "https://")):
             targets.append(u)
 
-    # Fallbacks retained, but never preferred over a direct URL.
+    # Fetch detailed offer JSON first if direct URLs are empty or failing
+    if offer_id and str(offer_id) != "0":
+        detailed_offer_url = f"https://api.eflow.team/v1/affiliates/offers/{offer_id}?relationship=all"
+        try:
+            r_detail = session.get(detailed_offer_url, headers=dict(headers), timeout=20, verify=False)
+            if r_detail.status_code == 200 and is_json_response(r_detail):
+                detail_data = r_detail.json()
+                discovered = extract_urls(detail_data)
+                for d_url in discovered:
+                    if any(x in d_url.lower() for x in ["suppression", "download", ".zip", "optizmo", "unsub"]):
+                        targets.append(d_url)
+        except Exception as e:
+            diagnostics.append(f"DETAIL FETCH FAILED | {e}")
+
+    # Fallback endpoint variants for Everflow
     if suppression_id and str(suppression_id) != "0":
         targets.extend([
-            f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
+            f"https://api.eflow.team/v1/affiliates/offers/{offer_id}/suppressionlist",
             f"https://api.eflow.team/v1/affiliates/offers/{offer_id}/suppressionlist/download",
+            f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
             f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}",
         ])
 
@@ -294,10 +299,11 @@ def download_file_bytes(offer_id, suppression_id, direct_urls, headers):
 
                 for next_url in next_urls:
                     try:
-                        # Use API headers on the discovered URL; follow redirects.
+                        # Try requesting discovered URL without API auth headers if it's an external bucket or Optizmo link
+                        req_headers = {} if any(x in next_url for x in ["s3.amazonaws", "optizmo", "unsub"]) else dict(headers)
                         r2 = session.get(
                             next_url,
-                            headers=dict(headers),
+                            headers=req_headers,
                             timeout=90,
                             verify=False,
                             allow_redirects=True
@@ -338,7 +344,6 @@ def safe_name(value):
     return value[:120].strip(" ._") or "suppression"
 
 def unzip_bytes(data):
-    """Return (filename, bytes) for the useful file inside a ZIP."""
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         members = [
             x for x in z.infolist()
@@ -347,7 +352,6 @@ def unzip_bytes(data):
         if not members:
             return None, None
 
-        # Prefer common suppression formats.
         members.sort(key=lambda x: (
             0 if x.filename.lower().endswith((".csv", ".txt")) else 1,
             len(x.filename)
@@ -356,10 +360,6 @@ def unzip_bytes(data):
         return chosen.filename.split("/")[-1], z.read(chosen)
 
 def make_final_file(data, ext, offer_id):
-    """
-    If eFlow returns a ZIP, keep the ZIP as the original download and also
-    expose the first CSV/TXT inside it as a convenient extracted file.
-    """
     if ext != "zip":
         return [(f"Offer_{offer_id}_Suppression.{ext}", data, "application/octet-stream")]
 
