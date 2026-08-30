@@ -1,254 +1,953 @@
+```python
 import streamlit as st
 import requests
 import pandas as pd
 import json
 import re
 import urllib3
+from urllib.parse import urljoin, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Everflow Direct Downloader", page_icon="🛡️", layout="wide")
+st.set_page_config(
+    page_title="Everflow Suppression Downloader",
+    page_icon="🛡️",
+    layout="wide"
+)
+
+
+# =========================================================
+# SESSION
+# =========================================================
 
 def get_session():
     session = requests.Session()
+
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
         "Accept": "*/*"
     })
+
     return session
 
-def extract_direct_url_from_offer(offer):
-    """
-    Extracts any suppression download link directly embedded in the offer object
-    """
-    if not isinstance(offer, dict):
-        return ""
-    
-    # 1. Search in common key paths
-    str_offer = json.dumps(offer)
-    
-    # Check relationship / suppression_list keys
-    rel = offer.get("relationship", {})
-    if isinstance(rel, dict):
-        supp = rel.get("suppression_list", {})
-        if isinstance(supp, dict):
-            for k in ["download_url", "file_url", "url", "location"]:
-                if supp.get(k):
-                    return str(supp[k])
-                    
-    for k in ["suppression_download_url", "suppression_file_url", "suppression_url"]:
-        if offer.get(k):
-            return str(offer[k])
 
-    # 2. Regex search for direct HTTP file links inside the JSON payload
-    links = re.findall(r'https?://[^\s"]+\.(?:zip|rar|7z|gz|csv|txt)[^\s"]*', str_offer, re.I)
-    if links:
-        return links[0]
-        
-    return ""
+# =========================================================
+# AUTH HEADERS
+# =========================================================
+
+def build_headers(auth_method, api_key, custom_header_name):
+
+    headers = {
+        "Accept": "*/*"
+    }
+
+    if not api_key:
+        return headers
+
+    if auth_method == "Bearer Token":
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    elif auth_method == "X-API-Key":
+        headers["X-API-Key"] = api_key
+
+    elif auth_method == "API-Key":
+        headers["API-Key"] = api_key
+
+    elif auth_method == "Custom Header":
+        if custom_header_name:
+            headers[custom_header_name.strip()] = api_key.strip()
+
+    return headers
+
+
+# =========================================================
+# FIND URL RECURSIVELY
+# =========================================================
+
+def find_download_urls(obj):
+    """
+    Searches recursively for possible download URLs
+    inside the complete offer JSON.
+    """
+
+    found = []
+
+    if isinstance(obj, dict):
+
+        for key, value in obj.items():
+
+            key_lower = str(key).lower()
+
+            if isinstance(value, str):
+
+                if (
+                    "download" in key_lower
+                    or "file_url" in key_lower
+                    or "download_url" in key_lower
+                    or "location" in key_lower
+                    or key_lower == "url"
+                ):
+                    if value.startswith("http"):
+                        found.append(value)
+
+            elif isinstance(value, (dict, list)):
+                found.extend(find_download_urls(value))
+
+    elif isinstance(obj, list):
+
+        for item in obj:
+            found.extend(find_download_urls(item))
+
+    return list(dict.fromkeys(found))
+
+
+# =========================================================
+# EXTRACT SUPPRESSION INFORMATION
+# =========================================================
+
+def extract_suppression_info(offer):
+
+    if not isinstance(offer, dict):
+        return 0, []
+
+    suppression_id = 0
+    urls = []
+
+    # Direct suppression IDs
+    possible_id_keys = [
+        "suppression_list_id",
+        "network_suppression_list_id",
+        "suppression_id"
+    ]
+
+    for key in possible_id_keys:
+
+        value = offer.get(key)
+
+        if value:
+            suppression_id = value
+            break
+
+    # Relationship
+    relationship = offer.get("relationship", {})
+
+    if isinstance(relationship, dict):
+
+        suppression = relationship.get("suppression_list", {})
+
+        if isinstance(suppression, dict):
+
+            for key in [
+                "network_suppression_list_id",
+                "suppression_list_id",
+                "id"
+            ]:
+
+                value = suppression.get(key)
+
+                if value:
+                    suppression_id = value
+                    break
+
+    # Recursive URL extraction
+    urls.extend(find_download_urls(offer))
+
+    # Regex fallback
+    try:
+
+        raw_json = json.dumps(offer)
+
+        regex_urls = re.findall(
+            r'https?://[^\s"\\]+',
+            raw_json,
+            re.IGNORECASE
+        )
+
+        for url in regex_urls:
+
+            if any(
+                x in url.lower()
+                for x in [
+                    "suppression",
+                    "download",
+                    ".rar",
+                    ".zip",
+                    ".txt",
+                    ".csv",
+                    ".7z"
+                ]
+            ):
+                urls.append(url)
+
+    except Exception:
+        pass
+
+    urls = list(dict.fromkeys(urls))
+
+    return suppression_id, urls
+
+
+# =========================================================
+# FETCH ONE PAGE
+# =========================================================
 
 def fetch_single_page(base_endpoint, page, page_size, headers):
+
     urls = [
         f"{base_endpoint}?page={page}&page_size={page_size}&relationship=all&offer_status=all",
         f"{base_endpoint}?page={page}&page_size={page_size}"
     ]
+
     session = get_session()
-    for u in urls:
+
+    for url in urls:
+
         try:
-            res = session.get(u, headers=headers, timeout=12, verify=False)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, list):
-                    return data
-                elif isinstance(data, dict):
-                    for k in ["offers", "data", "results", "items"]:
-                        if k in data and isinstance(data[k], list):
-                            return data[k]
+
+            response = session.get(
+                url,
+                headers=headers,
+                timeout=20,
+                verify=False
+            )
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+
+            if isinstance(data, list):
+                return data
+
+            if isinstance(data, dict):
+
+                for key in [
+                    "offers",
+                    "data",
+                    "results",
+                    "items"
+                ]:
+
+                    if key in data and isinstance(data[key], list):
+                        return data[key]
+
         except Exception:
             continue
+
     return []
 
-def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
-    headers = {}
-    clean_url = base_url.strip()
-    
-    if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
-        if "/v1/affiliates/offers" in clean_url and "/alloffers" not in clean_url:
-            clean_url = clean_url.replace("/v1/affiliates/offers", "/v1/affiliates/alloffers")
-        if custom_header_name.lower() == "x-eflow-api-key":
-            custom_header_name = "X-Eflow-Api-Key"
 
-    if auth_method == "Bearer Token":
-        headers["Authorization"] = f"Bearer {api_key}"
-    elif auth_method == "X-API-Key":
-        headers["X-API-Key"] = api_key
-    elif auth_method == "API-Key":
-        headers["API-Key"] = api_key
-    elif auth_method == "Custom Header" and custom_header_name:
-        headers[custom_header_name.strip()] = api_key.strip()
+# =========================================================
+# FETCH ALL OFFERS
+# =========================================================
+
+def fetch_all_offers(
+    base_url,
+    auth_method,
+    api_key,
+    custom_header_name
+):
+
+    clean_url = base_url.strip()
+
+    headers = build_headers(
+        auth_method,
+        api_key,
+        custom_header_name
+    )
+
+    # Everflow endpoint normalization
+    if "eflow" in clean_url.lower() or "everflow" in clean_url.lower():
+
+        if (
+            "/v1/affiliates/offers" in clean_url
+            and "/alloffers" not in clean_url
+        ):
+            clean_url = clean_url.replace(
+                "/v1/affiliates/offers",
+                "/v1/affiliates/alloffers"
+            )
+
+        if custom_header_name.lower() == "x-eflow-api-key":
+            headers["X-Eflow-Api-Key"] = api_key
 
     base_endpoint = clean_url.split("?")[0]
-    first_page = fetch_single_page(base_endpoint, 1, 500, headers)
+
+    first_page = fetch_single_page(
+        base_endpoint,
+        1,
+        500,
+        headers
+    )
+
     if not first_page:
         return [], headers
 
     all_offers = list(first_page)
-    
+
     if len(first_page) >= 500:
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [executor.submit(fetch_single_page, base_endpoint, p, 500, headers) for p in range(2, 25)]
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+
+            futures = [
+                executor.submit(
+                    fetch_single_page,
+                    base_endpoint,
+                    page,
+                    500,
+                    headers
+                )
+                for page in range(2, 25)
+            ]
+
             for future in as_completed(futures):
+
                 try:
-                    res = future.result()
-                    if res:
-                        all_offers.extend(res)
+
+                    result = future.result()
+
+                    if result:
+                        all_offers.extend(result)
+
                 except Exception:
                     pass
 
     return all_offers, headers
 
-def download_file_bytes(offer_id, suppression_id, direct_url, headers):
-    """
-    Downloads raw suppression archive directly without needing cookies
-    """
-    session = get_session()
-    
-    # List of endpoints to try in order
-    targets = []
-    if direct_url and direct_url.startswith("http"):
-        targets.append(direct_url)
-        
-    targets.extend([
-        f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
-        f"https://api.eflow.team/v1/affiliates/offers/{offer_id}/suppressionlist/download",
-        f"https://media.everflowclient.io/suppression/{suppression_id}"
-    ])
-    
-    for target in targets:
-        try:
-            req_headers = {} if target.startswith("http") and "eflow.team" not in target else headers
-            res = session.get(target, headers=req_headers, timeout=25, verify=False, allow_redirects=True)
-            
-            if res.status_code == 200 and len(res.content) > 50:
-                if "application/json" in res.headers.get("Content-Type", ""):
-                    try:
-                        data = res.json()
-                        link = data.get("download_url") or data.get("url") or data.get("file_url")
-                        if link:
-                            r2 = session.get(link, timeout=30, verify=False)
-                            if r2.status_code == 200:
-                                ext = "rar" if "rar" in link.lower() else "zip"
-                                return r2.content, ext
-                    except Exception:
-                        pass
-                else:
-                    cd = res.headers.get("Content-Disposition", "")
-                    ext = "rar" if "rar" in cd.lower() or "rar" in target.lower() else ("csv" if "csv" in cd.lower() else "zip")
-                    return res.content, ext
-        except Exception:
-            continue
-            
-    return None, None
 
-st.title("🛡️ Everflow Direct Suppression Downloader")
+# =========================================================
+# FILE EXTENSION
+# =========================================================
+
+def detect_extension(response, url=""):
+
+    content_type = response.headers.get(
+        "Content-Type",
+        ""
+    ).lower()
+
+    content_disposition = response.headers.get(
+        "Content-Disposition",
+        ""
+    ).lower()
+
+    combined = (
+        content_type
+        + " "
+        + content_disposition
+        + " "
+        + url.lower()
+    )
+
+    if ".rar" in combined or "rar" in content_type:
+        return "rar"
+
+    if ".7z" in combined or "7z" in content_type:
+        return "7z"
+
+    if ".zip" in combined or "zip" in content_type:
+        return "zip"
+
+    if ".csv" in combined or "csv" in content_type:
+        return "csv"
+
+    if ".txt" in combined or "text/plain" in content_type:
+        return "txt"
+
+    # Magic bytes
+    data = response.content[:20]
+
+    if data.startswith(b"PK"):
+        return "zip"
+
+    if data.startswith(b"Rar!"):
+        return "rar"
+
+    if data.startswith(b"7z"):
+        return "7z"
+
+    return "bin"
+
+
+# =========================================================
+# CHECK IF RESPONSE IS JSON
+# =========================================================
+
+def is_json_response(response):
+
+    content_type = response.headers.get(
+        "Content-Type",
+        ""
+    ).lower()
+
+    if "json" in content_type:
+        return True
+
+    try:
+        response.json()
+        return True
+    except Exception:
+        return False
+
+
+# =========================================================
+# EXTRACT DOWNLOAD URL FROM JSON
+# =========================================================
+
+def extract_urls_from_response(data):
+
+    urls = []
+
+    if isinstance(data, dict):
+
+        for key, value in data.items():
+
+            key_lower = str(key).lower()
+
+            if isinstance(value, str):
+
+                if (
+                    value.startswith("http")
+                    and (
+                        "url" in key_lower
+                        or "download" in key_lower
+                        or "file" in key_lower
+                        or "location" in key_lower
+                    )
+                ):
+                    urls.append(value)
+
+            elif isinstance(value, (dict, list)):
+
+                urls.extend(
+                    extract_urls_from_response(value)
+                )
+
+    elif isinstance(data, list):
+
+        for item in data:
+            urls.extend(
+                extract_urls_from_response(item)
+            )
+
+    return list(dict.fromkeys(urls))
+
+
+# =========================================================
+# DOWNLOAD FILE
+# =========================================================
+
+def download_file_bytes(
+    offer_id,
+    suppression_id,
+    direct_urls,
+    headers
+):
+
+    session = get_session()
+
+    diagnostics = []
+
+    targets = []
+
+    # -----------------------------------------------------
+    # Direct URLs
+    # -----------------------------------------------------
+
+    if isinstance(direct_urls, str):
+
+        direct_urls = [direct_urls]
+
+    if direct_urls:
+
+        for url in direct_urls:
+
+            if url and url.startswith("http"):
+                targets.append(url)
+
+    # -----------------------------------------------------
+    # Suppression endpoints
+    # -----------------------------------------------------
+
+    if suppression_id and str(suppression_id) != "0":
+
+        targets.extend([
+            f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
+
+            f"https://api.eflow.team/v1/affiliates/offers/{offer_id}/suppressionlist/download",
+
+            f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}"
+        ])
+
+    # Remove duplicates
+    targets = list(dict.fromkeys(targets))
+
+    for target in targets:
+
+        try:
+
+            # Always use authentication headers.
+            # Some direct URLs may also require the API key.
+            request_headers = dict(headers)
+
+            response = session.get(
+                target,
+                headers=request_headers,
+                timeout=45,
+                verify=False,
+                allow_redirects=True,
+                stream=False
+            )
+
+            status = response.status_code
+            content_type = response.headers.get(
+                "Content-Type",
+                ""
+            )
+
+            diagnostics.append(
+                f"{status} | {target} | {content_type}"
+            )
+
+            # -------------------------------------------------
+            # Successful response
+            # -------------------------------------------------
+
+            if status == 200 and len(response.content) > 20:
+
+                # JSON response may contain another URL
+                if is_json_response(response):
+
+                    try:
+
+                        data = response.json()
+
+                        next_urls = extract_urls_from_response(
+                            data
+                        )
+
+                        for next_url in next_urls:
+
+                            try:
+
+                                response2 = session.get(
+                                    next_url,
+                                    headers=request_headers,
+                                    timeout=60,
+                                    verify=False,
+                                    allow_redirects=True
+                                )
+
+                                diagnostics.append(
+                                    f"{response2.status_code} | "
+                                    f"{next_url} | "
+                                    f"{response2.headers.get('Content-Type','')}"
+                                )
+
+                                if (
+                                    response2.status_code == 200
+                                    and len(response2.content) > 20
+                                ):
+
+                                    # Make sure it isn't another JSON error
+                                    if not is_json_response(response2):
+
+                                        ext = detect_extension(
+                                            response2,
+                                            next_url
+                                        )
+
+                                        return (
+                                            response2.content,
+                                            ext,
+                                            diagnostics
+                                        )
+
+                            except Exception as e:
+
+                                diagnostics.append(
+                                    f"ERROR | {next_url} | {str(e)}"
+                                )
+
+                        # JSON without usable file URL
+                        continue
+
+                    except Exception:
+                        continue
+
+                # -------------------------------------------------
+                # Raw file response
+                # -------------------------------------------------
+
+                ext = detect_extension(
+                    response,
+                    target
+                )
+
+                return (
+                    response.content,
+                    ext,
+                    diagnostics
+                )
+
+            # -------------------------------------------------
+            # Error diagnostics
+            # -------------------------------------------------
+
+            body_preview = ""
+
+            try:
+                body_preview = response.text[:500]
+            except Exception:
+                pass
+
+            if body_preview:
+                diagnostics.append(
+                    f"BODY | {body_preview}"
+                )
+
+        except Exception as e:
+
+            diagnostics.append(
+                f"ERROR | {target} | {str(e)}"
+            )
+
+    return None, None, diagnostics
+
+
+# =========================================================
+# UI
+# =========================================================
+
+st.title("🛡️ Everflow Suppression Downloader")
+
+st.caption(
+    "Scan offers and download available suppression files."
+)
+
+
+# =========================================================
+# SIDEBAR
+# =========================================================
 
 with st.sidebar:
+
     st.header("Sponsor Configuration")
-    sponsor_name = st.text_input("Sponsor Name", value="XI Leads")
-    api_url = st.text_input("API Endpoint URL", value="https://api.eflow.team/v1/affiliates/alloffers")
-    auth_method = st.selectbox("Authentication Method", ["Custom Header", "Bearer Token", "X-API-Key", "API-Key", "No Authentication"])
-    
+
+    sponsor_name = st.text_input(
+        "Sponsor Name",
+        value="XI Leads"
+    )
+
+    api_url = st.text_input(
+        "API Endpoint URL",
+        value="https://api.eflow.team/v1/affiliates/alloffers"
+    )
+
+    auth_method = st.selectbox(
+        "Authentication Method",
+        [
+            "Custom Header",
+            "Bearer Token",
+            "X-API-Key",
+            "API-Key",
+            "No Authentication"
+        ]
+    )
+
     custom_header_name = ""
+
     if auth_method == "Custom Header":
-        custom_header_name = st.text_input("Custom Header Name", value="X-Eflow-Api-Key")
+
+        custom_header_name = st.text_input(
+            "Custom Header Name",
+            value="X-Eflow-Api-Key"
+        )
 
     api_key = ""
-    if auth_method != "No Authentication":
-        api_key = st.text_input("API Key / Token", type="password")
 
-    scan_submitted = st.button("Scan All Offers", use_container_width=True, type="primary")
+    if auth_method != "No Authentication":
+
+        api_key = st.text_input(
+            "API Key / Token",
+            type="password"
+        )
+
+    scan_submitted = st.button(
+        "🔎 Scan All Offers",
+        use_container_width=True,
+        type="primary"
+    )
+
+
+# =========================================================
+# SCAN
+# =========================================================
 
 if scan_submitted:
-    if not api_url or (auth_method != "No Authentication" and not api_key):
-        st.error("Please fill in required fields.")
+
+    if not api_url:
+
+        st.error("Please enter the API Endpoint URL.")
+
+    elif auth_method != "No Authentication" and not api_key:
+
+        st.error("Please enter the API Key / Token.")
+
     else:
-        with st.spinner("Fetching offers and links..."):
+
+        with st.spinner(
+            "Fetching offers and suppression information..."
+        ):
+
             try:
-                offers_list, headers_used = fetch_all_offers(api_url, auth_method, api_key, custom_header_name)
+
+                offers_list, headers_used = fetch_all_offers(
+                    api_url,
+                    auth_method,
+                    api_key,
+                    custom_header_name
+                )
 
                 if not offers_list:
-                    st.warning("No offers found.")
+
+                    st.warning(
+                        "No offers found. Check API URL and authentication."
+                    )
+
                 else:
+
                     processed = []
+
                     for offer in offers_list:
+
                         if not isinstance(offer, dict):
                             continue
-                        
-                        offer_id = offer.get("network_offer_id") or offer.get("offer_id") or offer.get("id", "N/A")
-                        offer_name = offer.get("name") or offer.get("title", "N/A")
-                        offer_status = offer.get("offer_status", "N/A")
 
-                        supp_id = offer.get("suppression_list_id", 0)
-                        if not supp_id or str(supp_id) == "0":
-                            rel = offer.get("relationship", {})
-                            if isinstance(rel, dict):
-                                supp_obj = rel.get("suppression_list", {})
-                                if isinstance(supp_obj, dict):
-                                    supp_id = supp_obj.get("network_suppression_list_id") or supp_obj.get("suppression_list_id", 0)
+                        offer_id = (
+                            offer.get("network_offer_id")
+                            or offer.get("offer_id")
+                            or offer.get("id")
+                            or "N/A"
+                        )
 
-                        str_supp_id = str(supp_id) if supp_id else "0"
-                        direct_url = extract_direct_url_from_offer(offer)
+                        offer_name = (
+                            offer.get("name")
+                            or offer.get("title")
+                            or "N/A"
+                        )
+
+                        offer_status = (
+                            offer.get("offer_status")
+                            or offer.get("status")
+                            or "N/A"
+                        )
+
+                        suppression_id, direct_urls = (
+                            extract_suppression_info(offer)
+                        )
 
                         processed.append({
+
                             "Sponsor": sponsor_name,
-                            "Offer ID": str(offer_id),
-                            "Offer Name": str(offer_name),
-                            "Status": str(offer_status),
-                            "Suppression Found": "Yes" if str_supp_id != "0" or direct_url else "No",
-                            "Suppression ID": str_supp_id,
-                            "Direct URL": direct_url
+
+                            "Offer ID": str(
+                                offer_id
+                            ),
+
+                            "Offer Name": str(
+                                offer_name
+                            ),
+
+                            "Status": str(
+                                offer_status
+                            ),
+
+                            "Suppression Found":
+                                "Yes"
+                                if (
+                                    str(suppression_id) != "0"
+                                    or direct_urls
+                                )
+                                else "No",
+
+                            "Suppression ID":
+                                str(suppression_id),
+
+                            "Download URLs":
+                                "\n".join(
+                                    direct_urls
+                                )
+
                         })
 
-                    st.session_state["scan_results"] = pd.DataFrame(processed)
-                    st.session_state["sponsor_name"] = sponsor_name
-                    st.session_state["headers_used"] = headers_used
-                    st.success(f"Scanned {len(processed)} offers successfully!")
+                    st.session_state[
+                        "scan_results"
+                    ] = pd.DataFrame(processed)
+
+                    st.session_state[
+                        "sponsor_name"
+                    ] = sponsor_name
+
+                    st.session_state[
+                        "headers_used"
+                    ] = headers_used
+
+                    st.success(
+                        f"Scanned {len(processed)} offers successfully!"
+                    )
+
             except Exception as e:
-                st.error(f"Error: {str(e)}")
 
-if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
+                st.error(
+                    f"Error while scanning offers: {str(e)}"
+                )
+
+
+# =========================================================
+# RESULTS
+# =========================================================
+
+if (
+    "scan_results" in st.session_state
+    and not st.session_state["scan_results"].empty
+):
+
     df = st.session_state["scan_results"]
-    headers_used = st.session_state.get("headers_used", {})
-    s_name = st.session_state.get("sponsor_name", "Sponsor")
 
-    st.subheader("📋 Offers List & Direct File Download")
-    
-    supp_df = df[(df["Suppression ID"] != "0") | (df["Direct URL"] != "")].copy()
-    st.write(f"لقينا **{len(supp_df)}** Offer فيه Suppression File جاهز للتحميل:")
+    headers_used = st.session_state.get(
+        "headers_used",
+        {}
+    )
+
+    st.subheader(
+        "📋 Offers List & Suppression Download"
+    )
+
+    supp_df = df[
+        (df["Suppression ID"] != "0")
+        | (df["Download URLs"] != "")
+    ].copy()
+
+    st.write(
+        f"لقينا **{len(supp_df)}** Offer فيه Suppression information."
+    )
 
     for idx, row in supp_df.iterrows():
-        col1, col2, col3, col4 = st.columns([1, 4, 2, 3])
+
+        col1, col2, col3, col4 = st.columns(
+            [1, 4, 2, 3]
+        )
+
         with col1:
-            st.write(f"**#{row['Offer ID']}**")
+
+            st.write(
+                f"**#{row['Offer ID']}**"
+            )
+
         with col2:
-            st.write(row['Offer Name'])
+
+            st.write(
+                row["Offer Name"]
+            )
+
         with col3:
-            st.write(f"Supp ID: `{row['Suppression ID']}`")
+
+            st.write(
+                f"Supp ID: `{row['Suppression ID']}`"
+            )
+
         with col4:
-            btn_key = f"dl_{row['Offer ID']}_{row['Suppression ID']}"
-            if st.button(f"⬇️ Get File (Offer {row['Offer ID']})", key=btn_key):
-                with st.spinner("Downloading file..."):
-                    file_bytes, ext = download_file_bytes(
-                        row['Offer ID'], row['Suppression ID'], row['Direct URL'], headers_used
-                    )
-                    if file_bytes:
-                        st.download_button(
-                            label=f"💾 Save Offer_{row['Offer ID']}.{ext}",
-                            data=file_bytes,
-                            file_name=f"Offer_{row['Offer ID']}_Suppression.{ext}",
-                            mime="application/octet-stream",
-                            key=f"save_{btn_key}"
+
+            btn_key = (
+                f"dl_{row['Offer ID']}_"
+                f"{row['Suppression ID']}_{idx}"
+            )
+
+            if st.button(
+                f"⬇️ Get File",
+                key=btn_key
+            ):
+
+                # Convert stored URLs back to list
+                direct_urls = []
+
+                if row["Download URLs"]:
+
+                    direct_urls = [
+                        x.strip()
+                        for x in row[
+                            "Download URLs"
+                        ].split("\n")
+                        if x.strip()
+                    ]
+
+                with st.spinner(
+                    "Trying to download suppression file..."
+                ):
+
+                    file_bytes, ext, diagnostics = (
+                        download_file_bytes(
+                            row["Offer ID"],
+                            row["Suppression ID"],
+                            direct_urls,
+                            headers_used
                         )
-                    else:
-                        st.error("فشل تحميل هذا الملف تلقائياً. تأكد أن الـ API Key بها صلاحيات Suppression Download.")
+                    )
+
+                # ---------------------------------------------
+                # SUCCESS
+                # ---------------------------------------------
+
+                if file_bytes:
+
+                    st.success(
+                        f"File ready: "
+                        f"{len(file_bytes) / 1024 / 1024:.2f} MB"
+                    )
+
+                    st.download_button(
+                        label=(
+                            f"💾 Save "
+                            f"Offer_{row['Offer ID']}"
+                            f"_Suppression.{ext}"
+                        ),
+
+                        data=file_bytes,
+
+                        file_name=(
+                            f"Offer_{row['Offer ID']}"
+                            f"_Suppression.{ext}"
+                        ),
+
+                        mime="application/octet-stream",
+
+                        key=f"save_{btn_key}"
+                    )
+
+                # ---------------------------------------------
+                # FAILURE
+                # ---------------------------------------------
+
+                else:
+
+                    st.error(
+                        "❌ Failed to download the file."
+                    )
+
+                    st.warning(
+                        "Download diagnostics:"
+                    )
+
+                    for line in diagnostics:
+
+                        st.code(
+                            line,
+                            language="text"
+                        )
+```
