@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Affiliate Suppression Merger - Everflow Fixed", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Affiliate Suppression Links & Extractor", page_icon="🛡️", layout="wide")
 
 EMAIL_REGEX = re.compile(rb'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
@@ -98,8 +98,7 @@ def deep_search_url(obj):
         r'https?://[^\s"]+\.(?:zip|rar|7z|gz|csv|txt|tar)[^\s"]*',
         r'https?://[^\s"]*optizmo[^\s"]*',
         r'https?://[^\s"]*unsubcentral[^\s"]*',
-        r'https?://[^\s"]*suppress[^\s"]*',
-        r'https?://[^\s"]*download[^\s"]*'
+        r'https?://[^\s"]*suppress[^\s"]*'
     ]
     
     for pat in patterns:
@@ -107,56 +106,6 @@ def deep_search_url(obj):
         if m:
             return str(m[0])
     return ""
-
-def fetch_everflow_suppression_url(supp_id, headers):
-    """
-    Direct Everflow API Call to fetch suppression file download URL
-    """
-    if not supp_id or str(supp_id) == "0" or str(supp_id) == "N/A":
-        return ""
-    
-    endpoints = [
-        f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}",
-        f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}/download",
-        f"https://api.eflow.team/v1/networks/suppressionlists/{supp_id}"
-    ]
-    
-    session = get_session()
-    for ep in endpoints:
-        try:
-            res = session.get(ep, headers=headers, timeout=10, verify=False)
-            if res.status_code == 200:
-                data = res.json()
-                # 1. Direct key search
-                if isinstance(data, dict):
-                    dl = data.get("download_url") or data.get("file_url") or data.get("url")
-                    if dl and str(dl).startswith("http"):
-                        return str(dl)
-                # 2. Deep regex search
-                found = deep_search_url(data)
-                if found:
-                    return found
-        except Exception:
-            continue
-    return ""
-
-def resolve_dl_url(url):
-    if not url:
-        return ""
-    url_str = url.strip()
-    if "optizmo" in url_str.lower():
-        if not url_str.endswith("/download") and not re.search(r'\.(zip|rar|7z|gz|txt|csv)$', url_str, re.I):
-            url_str = url_str.rstrip("/") + "/download"
-    try:
-        session = get_session()
-        res = session.get(url_str, timeout=10, verify=False, allow_redirects=True)
-        if "text/html" in res.headers.get("Content-Type", "").lower():
-            m = re.findall(r'href=["\'](https?://[^"\']+\.(?:zip|rar|7z|gz|csv|txt))[["\']', res.text, re.I)
-            if m:
-                return m[0]
-        return res.url
-    except Exception:
-        return url_str
 
 def parse_stream_lines(file_obj, temp_file_path):
     count = 0
@@ -167,96 +116,74 @@ def parse_stream_lines(file_obj, temp_file_path):
                 count += 1
     return count
 
-def stream_extract_to_file(temp_file_path, url):
-    session = get_session()
-    count = 0
-    try:
-        with session.get(url, stream=True, timeout=90, verify=False) as resp:
-            if resp.status_code != 200:
-                return 0
+def extract_emails_from_uploaded_files(uploaded_files, output_temp_file):
+    total_count = 0
+    for uploaded_file in uploaded_files:
+        with tempfile.NamedTemporaryFile(delete=False) as raw_tmp:
+            raw_tmp.write(uploaded_file.read())
+            raw_path = raw_tmp.name
+
+        # 1. ZIP
+        try:
+            with zipfile.ZipFile(raw_path, 'r') as z:
+                for name in z.namelist():
+                    if not name.endswith('/'):
+                        with z.open(name) as zf:
+                            total_count += parse_stream_lines(zf, output_temp_file)
+            os.remove(raw_path)
+            continue
+        except Exception:
+            pass
+
+        # 2. RAR
+        try:
+            with rarfile.RarFile(raw_path, 'r') as rf:
+                for name in rf.namelist():
+                    if not name.endswith('/'):
+                        with rf.open(name) as rff:
+                            total_count += parse_stream_lines(rff, output_temp_file)
+            os.remove(raw_path)
+            continue
+        except Exception:
+            pass
+
+        # 3. TAR
+        try:
+            with tarfile.open(raw_path, 'r:*') as tar:
+                for member in tar.getmembers():
+                    if member.isfile():
+                        f = tar.extractfile(member)
+                        if f:
+                            total_count += parse_stream_lines(f, output_temp_file)
+            os.remove(raw_path)
+            continue
+        except Exception:
+            pass
+
+        # 4. GZIP
+        try:
+            with gzip.open(raw_path, 'rb') as gz:
+                total_count += parse_stream_lines(gz, output_temp_file)
+            os.remove(raw_path)
+            continue
+        except Exception:
+            pass
+
+        # 5. Plain Text / CSV
+        try:
+            with open(raw_path, 'rb') as f:
+                total_count += parse_stream_lines(f, output_temp_file)
+            os.remove(raw_path)
+            continue
+        except Exception:
+            pass
+
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
             
-            with tempfile.NamedTemporaryFile(delete=False) as raw_tmp:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    if chunk:
-                        raw_tmp.write(chunk)
-                raw_path = raw_tmp.name
+    return total_count
 
-            # 1. ZIP
-            try:
-                with zipfile.ZipFile(raw_path, 'r') as z:
-                    for name in z.namelist():
-                        if not name.endswith('/'):
-                            with z.open(name) as zf:
-                                count += parse_stream_lines(zf, temp_file_path)
-                os.remove(raw_path)
-                return count
-            except Exception:
-                pass
-
-            # 2. RAR
-            try:
-                with rarfile.RarFile(raw_path, 'r') as rf:
-                    for name in rf.namelist():
-                        if not name.endswith('/'):
-                            with rf.open(name) as rff:
-                                count += parse_stream_lines(rff, temp_file_path)
-                os.remove(raw_path)
-                return count
-            except Exception:
-                pass
-
-            # 3. TAR
-            try:
-                with tarfile.open(raw_path, 'r:*') as tar:
-                    for member in tar.getmembers():
-                        if member.isfile():
-                            f = tar.extractfile(member)
-                            if f:
-                                count += parse_stream_lines(f, temp_file_path)
-                os.remove(raw_path)
-                return count
-            except Exception:
-                pass
-
-            # 4. GZIP
-            try:
-                with gzip.open(raw_path, 'rb') as gz:
-                    count += parse_stream_lines(gz, temp_file_path)
-                os.remove(raw_path)
-                return count
-            except Exception:
-                pass
-
-            # 5. Plain Text
-            try:
-                with open(raw_path, 'rb') as f:
-                    count += parse_stream_lines(f, temp_file_path)
-                os.remove(raw_path)
-                return count
-            except Exception:
-                pass
-
-            if os.path.exists(raw_path):
-                os.remove(raw_path)
-
-    except Exception:
-        pass
-    return count
-
-def process_offer_big_data(row, headers_used, output_temp_file):
-    dl_url = row.get("Direct_URL")
-    supp_id = row.get("Suppression ID")
-
-    # If direct URL missing, fetch via Suppression ID API
-    if not dl_url or not dl_url.startswith("http"):
-        dl_url = fetch_everflow_suppression_url(supp_id, headers_used)
-
-    if dl_url and dl_url.startswith("http"):
-        target = resolve_dl_url(dl_url) or dl_url
-        return stream_extract_to_file(output_temp_file, target)
-    return 0
-
-st.title("🛡️ Suppression List Merger & Cleaner (Everflow Fixed)")
+st.title("🛡️ Suppression Offers Link Extractor & Manual Cleaner")
 
 with st.sidebar:
     st.header("Sponsor Configuration")
@@ -306,6 +233,10 @@ if scan_submitted:
 
                         dl_url = deep_search_url(offer)
                         has_suppression = "Yes" if (has_supp or (supp_id and str(supp_id) != "0") or dl_url) else "No"
+                        
+                        # Generate manual direct link for Everflow UI if URL not in API
+                        portal_base = api_url.split("/v1/")[0].replace("api.", "")
+                        ui_link = f"{portal_base}/offers/{offer_id}"
 
                         processed.append({
                             "Sponsor": sponsor_name,
@@ -314,11 +245,11 @@ if scan_submitted:
                             "Status": str(offer_status),
                             "Suppression Found": has_suppression,
                             "Suppression ID": str(supp_id),
-                            "Direct_URL": dl_url if dl_url else ""
+                            "Direct Download Link": dl_url if dl_url else "N/A",
+                            "Offer Portal Link": ui_link
                         })
 
                     st.session_state["scan_results"] = pd.DataFrame(processed)
-                    st.session_state["headers_used"] = headers_used
                     st.session_state["sponsor_name"] = sponsor_name
                     st.success(f"Scanned {len(processed)} offers successfully.")
             except Exception as e:
@@ -326,43 +257,41 @@ if scan_submitted:
 
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
-    headers_used = st.session_state.get("headers_used", {})
     s_name = st.session_state.get("sponsor_name", "Sponsor")
 
-    st.dataframe(df.drop(columns=["Direct_URL"], errors="ignore"), use_container_width=True)
-
-    supp_df = df[df["Suppression Found"] == "Yes"]
+    st.subheader("📋 Offers & Suppression Links")
     
-    if not supp_df.empty:
-        st.markdown("---")
-        st.subheader("⚡ High-Scale Merge & Extract")
-        
-        if st.button("🚀 Fast Extract & Clean All Suppressions", type="primary", use_container_width=True):
-            progress = st.progress(0)
-            status_text = st.empty()
-            
-            rows = supp_df.to_dict('records')
-            total = len(rows)
+    # Show Data Editor with clickable links
+    st.dataframe(
+        df,
+        column_config={
+            "Direct Download Link": st.column_config.LinkColumn("Direct Download Link"),
+            "Offer Portal Link": st.column_config.LinkColumn("Offer Portal Link")
+        },
+        use_container_width=True
+    )
 
+    # Export CSV of Links
+    csv_data = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download CSV List of All Offers & Links",
+        data=csv_data,
+        file_name=f"suppression_offers_list_{s_name}.csv",
+        mime="text/csv"
+    )
+
+    st.markdown("---")
+    st.subheader("📦 Bulk Cleaner: Upload Downloaded Files (Zip/Rar/Txt)")
+    st.write("ملي تليشارجي الملفات يدوياً، حطهم كاملين هنا باش يجمعهم فـ ملف واحد خالي من التكرار وبدون حدود للـ Size:")
+    
+    uploaded_files = st.file_uploader("Upload Suppression Archives/Files", accept_multiple_files=True)
+    
+    if uploaded_files and st.button("🚀 Clean & Merge Uploaded Files", type="primary"):
+        with st.spinner("Extracting and cleaning emails..."):
             with tempfile.NamedTemporaryFile(delete=False, mode="w+", encoding="utf-8") as tmp_merged:
                 tmp_path = tmp_merged.name
 
-            total_extracted = 0
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {executor.submit(process_offer_big_data, r, headers_used, tmp_path): r for r in rows}
-                completed = 0
-                for f in as_completed(futures):
-                    completed += 1
-                    progress.progress(completed / total)
-                    try:
-                        count = f.result()
-                        total_extracted += count
-                        status_text.text(f"Processed offer {completed}/{total} - Extracted so far: {total_extracted:,} emails...")
-                    except Exception:
-                        pass
-
-            progress.empty()
-            status_text.text("Sorting & Deduplicating extracted emails on disk...")
+            total_extracted = extract_emails_from_uploaded_files(uploaded_files, tmp_path)
 
             final_temp_path = tmp_path + "_clean.txt"
             unique_count = 0
@@ -377,21 +306,18 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                             outfile.write(em + "\n")
                             unique_count += 1
 
-                status_text.empty()
-                if unique_count > 0:
-                    st.success(f"Successfully processed archives! Found {unique_count:,} unique emails (from {total_extracted:,} total).")
-                    with open(final_temp_path, "rb") as f_download:
-                        st.download_button(
-                            label=f"💾 Download Cleaned Emails ({unique_count:,} Emails)",
-                            data=f_download,
-                            file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
-                else:
-                    st.warning("No emails extracted. Check if the API Key has permissions to access suppression download endpoints.")
+                st.success(f"Done! Cleaned {unique_count:,} unique emails from {total_extracted:,} total extracted.")
+                
+                with open(final_temp_path, "rb") as f_download:
+                    st.download_button(
+                        label=f"💾 Download Cleaned Master List ({unique_count:,} Emails)",
+                        data=f_download,
+                        file_name=f"master_suppression_{s_name}.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
             except Exception as e:
-                st.error(f"Error during deduplication: {str(e)}")
+                st.error(f"Error: {str(e)}")
             finally:
                 if os.path.exists(tmp_path):
                     os.remove(tmp_path)
