@@ -6,7 +6,6 @@ import zipfile
 import gzip
 import tarfile
 import rarfile
-import io
 import os
 import re
 import tempfile
@@ -15,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Affiliate Suppression Merger - Universal Archive Edition", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Affiliate Suppression Merger - Everflow Fixed", page_icon="🛡️", layout="wide")
 
 EMAIL_REGEX = re.compile(rb'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
@@ -100,7 +99,7 @@ def deep_search_url(obj):
         r'https?://[^\s"]*optizmo[^\s"]*',
         r'https?://[^\s"]*unsubcentral[^\s"]*',
         r'https?://[^\s"]*suppress[^\s"]*',
-        r'https?://[^\s"]*eflow[^\s"]*/suppression[^\s"]*'
+        r'https?://[^\s"]*download[^\s"]*'
     ]
     
     for pat in patterns:
@@ -109,17 +108,36 @@ def deep_search_url(obj):
             return str(m[0])
     return ""
 
-def fetch_supp_url_by_id(supp_id, headers):
-    if not supp_id or str(supp_id) == "0":
+def fetch_everflow_suppression_url(supp_id, headers):
+    """
+    Direct Everflow API Call to fetch suppression file download URL
+    """
+    if not supp_id or str(supp_id) == "0" or str(supp_id) == "N/A":
         return ""
-    try:
-        url = f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}"
-        session = get_session()
-        res = session.get(url, headers=headers, timeout=8, verify=False)
-        if res.status_code == 200:
-            return deep_search_url(res.json())
-    except Exception:
-        pass
+    
+    endpoints = [
+        f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}",
+        f"https://api.eflow.team/v1/affiliates/suppressionlists/{supp_id}/download",
+        f"https://api.eflow.team/v1/networks/suppressionlists/{supp_id}"
+    ]
+    
+    session = get_session()
+    for ep in endpoints:
+        try:
+            res = session.get(ep, headers=headers, timeout=10, verify=False)
+            if res.status_code == 200:
+                data = res.json()
+                # 1. Direct key search
+                if isinstance(data, dict):
+                    dl = data.get("download_url") or data.get("file_url") or data.get("url")
+                    if dl and str(dl).startswith("http"):
+                        return str(dl)
+                # 2. Deep regex search
+                found = deep_search_url(data)
+                if found:
+                    return found
+        except Exception:
+            continue
     return ""
 
 def resolve_dl_url(url):
@@ -163,7 +181,7 @@ def stream_extract_to_file(temp_file_path, url):
                         raw_tmp.write(chunk)
                 raw_path = raw_tmp.name
 
-            # 1. Try Standard ZIP
+            # 1. ZIP
             try:
                 with zipfile.ZipFile(raw_path, 'r') as z:
                     for name in z.namelist():
@@ -175,7 +193,7 @@ def stream_extract_to_file(temp_file_path, url):
             except Exception:
                 pass
 
-            # 2. Try RAR (WinRAR Archives)
+            # 2. RAR
             try:
                 with rarfile.RarFile(raw_path, 'r') as rf:
                     for name in rf.namelist():
@@ -187,7 +205,7 @@ def stream_extract_to_file(temp_file_path, url):
             except Exception:
                 pass
 
-            # 3. Try TAR / TAR.GZ
+            # 3. TAR
             try:
                 with tarfile.open(raw_path, 'r:*') as tar:
                     for member in tar.getmembers():
@@ -200,7 +218,7 @@ def stream_extract_to_file(temp_file_path, url):
             except Exception:
                 pass
 
-            # 4. Try GZIP
+            # 4. GZIP
             try:
                 with gzip.open(raw_path, 'rb') as gz:
                     count += parse_stream_lines(gz, temp_file_path)
@@ -209,7 +227,7 @@ def stream_extract_to_file(temp_file_path, url):
             except Exception:
                 pass
 
-            # 5. Fallback Plain Text / CSV / Uncompressed
+            # 5. Plain Text
             try:
                 with open(raw_path, 'rb') as f:
                     count += parse_stream_lines(f, temp_file_path)
@@ -227,15 +245,18 @@ def stream_extract_to_file(temp_file_path, url):
 
 def process_offer_big_data(row, headers_used, output_temp_file):
     dl_url = row.get("Direct_URL")
-    if not dl_url:
-        dl_url = fetch_supp_url_by_id(row.get("Suppression ID"), headers_used)
+    supp_id = row.get("Suppression ID")
+
+    # If direct URL missing, fetch via Suppression ID API
+    if not dl_url or not dl_url.startswith("http"):
+        dl_url = fetch_everflow_suppression_url(supp_id, headers_used)
 
     if dl_url and dl_url.startswith("http"):
         target = resolve_dl_url(dl_url) or dl_url
         return stream_extract_to_file(output_temp_file, target)
     return 0
 
-st.title("🛡️ Suppression List Merger & Cleaner (Universal Archive Edition)")
+st.title("🛡️ Suppression List Merger & Cleaner (Everflow Fixed)")
 
 with st.sidebar:
     st.header("Sponsor Configuration")
@@ -314,7 +335,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ High-Scale Merge & Extract (ZIP / RAR / TAR / GZ Support)")
+        st.subheader("⚡ High-Scale Merge & Extract")
         
         if st.button("🚀 Fast Extract & Clean All Suppressions", type="primary", use_container_width=True):
             progress = st.progress(0)
@@ -327,7 +348,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                 tmp_path = tmp_merged.name
 
             total_extracted = 0
-            with ThreadPoolExecutor(max_workers=2) as executor:
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 futures = {executor.submit(process_offer_big_data, r, headers_used, tmp_path): r for r in rows}
                 completed = 0
                 for f in as_completed(futures):
@@ -336,7 +357,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                     try:
                         count = f.result()
                         total_extracted += count
-                        status_text.text(f"Processed offer {completed}/{total} - Accumulated ~{total_extracted:,} emails...")
+                        status_text.text(f"Processed offer {completed}/{total} - Extracted so far: {total_extracted:,} emails...")
                     except Exception:
                         pass
 
@@ -357,16 +378,18 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                             unique_count += 1
 
                 status_text.empty()
-                st.success(f"Successfully processed archives! Found {unique_count:,} unique emails (from {total_extracted:,} total).")
-
-                with open(final_temp_path, "rb") as f_download:
-                    st.download_button(
-                        label=f"💾 Download Cleaned Emails ({unique_count:,} Emails)",
-                        data=f_download,
-                        file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                if unique_count > 0:
+                    st.success(f"Successfully processed archives! Found {unique_count:,} unique emails (from {total_extracted:,} total).")
+                    with open(final_temp_path, "rb") as f_download:
+                        st.download_button(
+                            label=f"💾 Download Cleaned Emails ({unique_count:,} Emails)",
+                            data=f_download,
+                            file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                else:
+                    st.warning("No emails extracted. Check if the API Key has permissions to access suppression download endpoints.")
             except Exception as e:
                 st.error(f"Error during deduplication: {str(e)}")
             finally:
