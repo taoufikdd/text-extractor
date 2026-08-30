@@ -3,28 +3,30 @@ import requests
 import pandas as pd
 import json
 import os
-import tempfile
 import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Everflow Suppression Direct Downloader", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Everflow Suppression Bypass Downloader", page_icon="🛡️", layout="wide")
 
-def get_session():
+def get_session(user_cookie=""):
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json, text/html, */*"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9"
     })
+    if user_cookie.strip():
+        session.headers["Cookie"] = user_cookie.strip()
     return session
 
-def fetch_single_page(base_endpoint, page, page_size, headers):
+def fetch_single_page(base_endpoint, page, page_size, headers, user_cookie):
     urls = [
         f"{base_endpoint}?page={page}&page_size={page_size}&relationship=all&offer_status=all",
         f"{base_endpoint}?page={page}&page_size={page_size}"
     ]
-    session = get_session()
+    session = get_session(user_cookie)
     for u in urls:
         try:
             res = session.get(u, headers=headers, timeout=12, verify=False)
@@ -40,7 +42,7 @@ def fetch_single_page(base_endpoint, page, page_size, headers):
             continue
     return []
 
-def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
+def fetch_all_offers(base_url, auth_method, api_key, custom_header_name, user_cookie):
     headers = {}
     clean_url = base_url.strip()
     
@@ -60,7 +62,7 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
         headers[custom_header_name.strip()] = api_key.strip()
 
     base_endpoint = clean_url.split("?")[0]
-    first_page = fetch_single_page(base_endpoint, 1, 500, headers)
+    first_page = fetch_single_page(base_endpoint, 1, 500, headers, user_cookie)
     if not first_page:
         return [], headers
 
@@ -68,7 +70,7 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
     
     if len(first_page) >= 500:
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [executor.submit(fetch_single_page, base_endpoint, p, 500, headers) for p in range(2, 25)]
+            futures = [executor.submit(fetch_single_page, base_endpoint, p, 500, headers, user_cookie) for p in range(2, 25)]
             for future in as_completed(futures):
                 try:
                     res = future.result()
@@ -79,55 +81,50 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
 
     return all_offers, headers
 
-def download_suppression_file_bytes(suppression_id, headers):
+def download_suppression_file_bytes(offer_id, suppression_id, headers, user_cookie, base_api_url):
     """
-    Downloads the raw suppression file (Zip/Rar/Csv) directly via API using headers
+    Tries multiple direct Everflow endpoints (UI & API) to pull the zip/rar file
     """
-    if not suppression_id or str(suppression_id) == "0":
-        return None, None
-
+    parsed_portal = base_api_url.split("/v1/")[0].replace("https://api.", "https://").replace("http://api.", "http://")
+    
     endpoints = [
+        f"{parsed_portal}/v1/affiliates/offers/{offer_id}/suppressionlist/download",
         f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
-        f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}"
+        f"https://media.everflowclient.io/suppression/{suppression_id}",
+        f"{parsed_portal}/v1/affiliates/suppressionlists/{suppression_id}/download"
     ]
     
-    session = get_session()
+    session = get_session(user_cookie)
+    
     for ep in endpoints:
         try:
-            res = session.get(ep, headers=headers, timeout=30, verify=False)
-            if res.status_code == 200:
-                # If JSON returned with a download url inside
+            res = session.get(ep, headers=headers, timeout=30, verify=False, allow_redirects=True)
+            if res.status_code == 200 and len(res.content) > 100:
+                # Check if JSON with direct URL
                 if "application/json" in res.headers.get("Content-Type", ""):
                     try:
                         data = res.json()
-                        file_url = data.get("download_url") or data.get("url") or data.get("file_url")
-                        if file_url:
-                            file_res = session.get(file_url, timeout=40, verify=False)
-                            if file_res.status_code == 200:
-                                ext = "zip" if "zip" in file_url.lower() else ("rar" if "rar" in file_url.lower() else "file")
-                                return file_res.content, ext
+                        f_url = data.get("download_url") or data.get("url") or data.get("file_url")
+                        if f_url:
+                            f_res = session.get(f_url, timeout=40, verify=False)
+                            if f_res.status_code == 200:
+                                return f_res.content, "zip"
                     except Exception:
                         pass
                 else:
-                    # Direct binary file response
+                    # Direct binary data received (ZIP/RAR)
                     cd = res.headers.get("Content-Disposition", "")
-                    ext = "zip"
-                    if "rar" in cd.lower():
-                        ext = "rar"
-                    elif "csv" in cd.lower():
-                        ext = "csv"
-                    elif "txt" in cd.lower():
-                        ext = "txt"
+                    ext = "rar" if "rar" in cd.lower() else ("csv" if "csv" in cd.lower() else "zip")
                     return res.content, ext
         except Exception:
             continue
             
     return None, None
 
-st.title("🛡️ Everflow Direct Suppression Downloader")
+st.title("🛡️ Everflow Bypass Direct File Downloader")
 
 with st.sidebar:
-    st.header("Sponsor Configuration")
+    st.header("1. Sponsor Configuration")
     sponsor_name = st.text_input("Sponsor Name", value="XI Leads")
     api_url = st.text_input("API Endpoint URL", value="https://api.eflow.team/v1/affiliates/alloffers")
     auth_method = st.selectbox("Authentication Method", ["Custom Header", "Bearer Token", "X-API-Key", "API-Key", "No Authentication"])
@@ -140,6 +137,9 @@ with st.sidebar:
     if auth_method != "No Authentication":
         api_key = st.text_input("API Key / Token", type="password")
 
+    st.header("2. Browser Cookie (Bypass Permission Block)")
+    user_cookie = st.text_area("User Browser Cookie (Optional but recommended)", help="Copy 'Cookie' header from browser devtools if API download is blocked.", height=100)
+
     scan_submitted = st.button("Scan All Offers", use_container_width=True, type="primary")
 
 if scan_submitted:
@@ -148,7 +148,7 @@ if scan_submitted:
     else:
         with st.spinner("Fetching offers list..."):
             try:
-                offers_list, headers_used = fetch_all_offers(api_url, auth_method, api_key, custom_header_name)
+                offers_list, headers_used = fetch_all_offers(api_url, auth_method, api_key, custom_header_name, user_cookie)
 
                 if not offers_list:
                     st.warning("No offers found.")
@@ -184,6 +184,8 @@ if scan_submitted:
                     st.session_state["scan_results"] = pd.DataFrame(processed)
                     st.session_state["sponsor_name"] = sponsor_name
                     st.session_state["headers_used"] = headers_used
+                    st.session_state["user_cookie"] = user_cookie
+                    st.session_state["api_url"] = api_url
                     st.success(f"Scanned {len(processed)} offers successfully!")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
@@ -191,16 +193,15 @@ if scan_submitted:
 if "scan_results" in st.session_state and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
+    user_cookie = st.session_state.get("user_cookie", "")
+    api_url = st.session_state.get("api_url", "")
     s_name = st.session_state.get("sponsor_name", "Sponsor")
 
     st.subheader("📋 Offers & Direct File Downloads")
     
-    # Filter only offers with Suppression ID
     supp_df = df[df["Suppression ID"] != "0"].copy()
-    
-    st.write(f"لقينا **{len(supp_df)}** Offer فيه Suppression File جاهز للتحميل المباشر:")
+    st.write(f"لقينا **{len(supp_df)}** Offer فيه Suppression File:")
 
-    # Display interactive list with direct download buttons per offer
     for idx, row in supp_df.iterrows():
         col1, col2, col3, col4 = st.columns([1, 4, 2, 3])
         with col1:
@@ -210,18 +211,19 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
         with col3:
             st.write(f"Supp ID: `{row['Suppression ID']}`")
         with col4:
-            # Dynamic download button for each offer
             btn_key = f"dl_{row['Offer ID']}_{row['Suppression ID']}"
             if st.button(f"⬇️ Get File (Offer {row['Offer ID']})", key=btn_key):
-                with st.spinner("Downloading raw file via API..."):
-                    file_bytes, ext = download_suppression_file_bytes(row['Suppression ID'], headers_used)
+                with st.spinner("Bypassing permissions & downloading file..."):
+                    file_bytes, ext = download_suppression_file_bytes(
+                        row['Offer ID'], row['Suppression ID'], headers_used, user_cookie, api_url
+                    )
                     if file_bytes:
                         st.download_button(
-                            label=f"💾 Save {row['Offer ID']}_suppression.{ext}",
+                            label=f"💾 Save Offer_{row['Offer ID']}_Suppression.{ext}",
                             data=file_bytes,
                             file_name=f"Offer_{row['Offer ID']}_Suppression_{row['Suppression ID']}.{ext}",
                             mime="application/octet-stream",
                             key=f"save_{btn_key}"
                         )
                     else:
-                        st.error("Could not fetch file directly. API permissions might block direct downloads for this ID.")
+                        st.error("Download blocked. Please paste your Browser Cookie in the sidebar to bypass this restriction.")
