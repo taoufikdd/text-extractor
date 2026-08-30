@@ -9,13 +9,12 @@ import rarfile
 import os
 import re
 import tempfile
-import urllib.parse
 import urllib3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Everflow Suppression Direct Downloader", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Everflow Suppression Fetcher", page_icon="🛡️", layout="wide")
 
 EMAIL_REGEX = re.compile(rb'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
@@ -87,52 +86,44 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
 
     return all_offers, headers
 
-def extract_everflow_file_url(offer_dict, base_api_url):
+def fetch_suppression_download_url(suppression_id, headers):
     """
-    Extracts the exact suppression file name from Everflow offer object 
-    and converts it into a direct downloadable HTTP link.
+    Fetch the direct download URL for a specific suppression_id via Everflow API
     """
-    # 1. Search for direct URL patterns in all fields
-    try:
-        str_obj = json.dumps(offer_dict)
-    except Exception:
-        str_obj = str(offer_dict)
+    if not suppression_id or str(suppression_id) == "0":
+        return ""
 
-    # Search full HTTP links
-    m = re.findall(r'https?://[^\s"]+\.(?:zip|rar|7z|gz|csv|txt|tar)[^\s"]*', str_obj, re.I)
-    if m:
-        return m[0]
-
-    # Search Optizmo/Unsubcentral
-    m_opt = re.findall(r'https?://[^\s"]*(?:optizmo|unsubcentral)[^\s"]*', str_obj, re.I)
-    if m_opt:
-        return m_opt[0]
-
-    # 2. Extract relative file name (e.g. Supplist%2520Generique...zip)
-    file_name = ""
-    for field in ["suppression_file", "file_name", "suppression_filename", "suppression_list_file"]:
-        if field in offer_dict and offer_dict[field]:
-            file_name = str(offer_dict[field])
-            break
-
-    if not file_name:
-        # Check deep inside relationship object
-        rel = offer_dict.get("relationship", {})
-        if isinstance(rel, dict):
-            supp_obj = rel.get("suppression_list", {})
-            if isinstance(supp_obj, dict):
-                file_name = supp_obj.get("file_name") or supp_obj.get("suppression_file", "")
-
-    if file_name:
-        file_name = file_name.strip()
-        if file_name.startswith("http"):
-            return file_name
-        
-        # Build Everflow CDN Download link
-        parsed_domain = base_api_url.split("/v1/")[0].replace("https://api.", "").replace("http://api.", "")
-        cdn_url = f"https://media.everflowclient.io/suppression/{file_name}"
-        return cdn_url
-
+    endpoints = [
+        f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}",
+        f"https://api.eflow.team/v1/affiliates/suppressionlists/{suppression_id}/download",
+        f"https://api.eflow.team/v1/networks/suppressionlists/{suppression_id}"
+    ]
+    
+    session = get_session()
+    for ep in endpoints:
+        try:
+            res = session.get(ep, headers=headers, timeout=8, verify=False)
+            if res.status_code == 200:
+                data = res.json()
+                str_data = json.dumps(data)
+                
+                # Check direct fields
+                for key in ["download_url", "url", "file_url", "location"]:
+                    if isinstance(data, dict) and key in data and data[key]:
+                        return str(data[key])
+                
+                # Search full HTTP links inside JSON
+                m = re.findall(r'https?://[^\s"]+\.(?:zip|rar|7z|gz|csv|txt|tar)[^\s"]*', str_data, re.I)
+                if m:
+                    return m[0]
+                
+                # Search Optizmo or Unsubcentral
+                m_opt = re.findall(r'https?://[^\s"]*(?:optizmo|unsubcentral|suppress)[^\s"]*', str_data, re.I)
+                if m_opt:
+                    return m_opt[0]
+        except Exception:
+            continue
+            
     return ""
 
 def parse_stream_lines(file_obj, temp_file_path):
@@ -198,12 +189,6 @@ def stream_extract_to_file(temp_file_path, url):
         pass
     return count
 
-def process_offer_big_data(row, output_temp_file):
-    dl_url = row.get("Direct File URL")
-    if dl_url and dl_url.startswith("http"):
-        return stream_extract_to_file(output_temp_file, dl_url)
-    return 0
-
 st.title("🛡️ Everflow Suppression Link Extractor & Auto-Downloader")
 
 with st.sidebar:
@@ -220,20 +205,25 @@ with st.sidebar:
     if auth_method != "No Authentication":
         api_key = st.text_input("API Key / Token", type="password")
 
-    scan_submitted = st.button("Scan All Offers", use_container_width=True, type="primary")
+    scan_submitted = st.button("Scan All Offers & Fetch Links", use_container_width=True, type="primary")
 
 if scan_submitted:
     if not api_url or (auth_method != "No Authentication" and not api_key):
         st.error("Please fill in required fields.")
     else:
-        with st.spinner("Fetching offers and extracting suppression links..."):
+        with st.spinner("Step 1: Fetching all offers..."):
             try:
                 offers_list, headers_used = fetch_all_offers(api_url, auth_method, api_key, custom_header_name)
 
                 if not offers_list:
                     st.warning("No offers found.")
                 else:
-                    processed = []
+                    st.info(f"Fetched {len(offers_list)} offers. Step 2: Querying Suppression API for download links...")
+                    
+                    # Process initial offer metadata
+                    raw_processed = []
+                    supp_ids_to_fetch = {}
+
                     for offer in offers_list:
                         if not isinstance(offer, dict):
                             continue
@@ -250,22 +240,55 @@ if scan_submitted:
                                 if isinstance(supp_obj, dict):
                                     supp_id = supp_obj.get("network_suppression_list_id") or supp_obj.get("suppression_list_id", 0)
 
-                        dl_url = extract_everflow_file_url(offer, api_url)
-                        has_suppression = "Yes" if (dl_url or (supp_id and str(supp_id) != "0")) else "No"
+                        str_supp_id = str(supp_id) if supp_id else "0"
+                        if str_supp_id != "0":
+                            supp_ids_to_fetch[str_supp_id] = None
 
-                        processed.append({
+                        raw_processed.append({
                             "Sponsor": sponsor_name,
                             "Offer ID": str(offer_id),
                             "Offer Name": str(offer_name),
                             "Status": str(offer_status),
-                            "Suppression Found": has_suppression,
-                            "Suppression ID": str(supp_id),
-                            "Direct File URL": dl_url if dl_url else "N/A"
+                            "Suppression Found": "Yes" if str_supp_id != "0" else "No",
+                            "Suppression ID": str_supp_id,
+                            "Direct File URL": "N/A"
                         })
 
-                    st.session_state["scan_results"] = pd.DataFrame(processed)
+                    # Parallel Fetch Download URLs for unique Suppression IDs
+                    if supp_ids_to_fetch:
+                        prog = st.progress(0)
+                        st_text = st.empty()
+                        total_sids = len(supp_ids_to_fetch)
+                        completed = 0
+
+                        with ThreadPoolExecutor(max_workers=5) as executor:
+                            future_to_sid = {
+                                executor.submit(fetch_suppression_download_url, sid, headers_used): sid 
+                                for sid in supp_ids_to_fetch.keys()
+                            }
+                            for future in as_completed(future_to_sid):
+                                sid = future_to_sid[future]
+                                completed += 1
+                                prog.progress(completed / total_sids)
+                                st_text.text(f"Extracting file URLs for Suppression ID {sid} ({completed}/{total_sids})...")
+                                try:
+                                    url_found = future.result()
+                                    if url_found:
+                                        supp_ids_to_fetch[sid] = url_found
+                                except Exception:
+                                    pass
+                        prog.empty()
+                        st_text.empty()
+
+                    # Attach fetched URLs back to dataset
+                    for item in raw_processed:
+                        sid = item["Suppression ID"]
+                        if sid in supp_ids_to_fetch and supp_ids_to_fetch[sid]:
+                            item["Direct File URL"] = supp_ids_to_fetch[sid]
+
+                    st.session_state["scan_results"] = pd.DataFrame(raw_processed)
                     st.session_state["sponsor_name"] = sponsor_name
-                    st.success(f"Scanned {len(processed)} offers successfully.")
+                    st.success(f"Scanned {len(raw_processed)} offers successfully!")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
 
@@ -274,24 +297,32 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     s_name = st.session_state.get("sponsor_name", "Sponsor")
 
     st.subheader("📋 Offers List & Direct File Download Links")
-    st.write("تقدر تضغط مباشرة على رابط أي ملف فـ العمود **Direct File URL** باش يتليشارجا عندك فـ الحين بلا ما تدخل لـ Everflow UI:")
 
     st.dataframe(
         df,
         column_config={
-            "Direct File URL": st.column_config.LinkColumn("Direct File URL", help="Click to download the zip/rar file directly")
+            "Direct File URL": st.column_config.LinkColumn("Direct File URL", help="Click to download suppression file directly")
         },
         use_container_width=True
+    )
+
+    # Export CSV of Links
+    csv_data = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Download CSV List of Offers & Links",
+        data=csv_data,
+        file_name=f"suppression_offers_{s_name}.csv",
+        mime="text/csv"
     )
 
     supp_df = df[df["Direct File URL"] != "N/A"]
     
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ Bulk Auto-Download & Clean All Found Suppression Files")
-        st.write(f"لقينا **{len(supp_df)}** ملف Suppression جاهز للتحميل المباشر والدمج:")
+        st.subheader("⚡ Bulk Auto-Download & Clean Emails")
+        st.write(f"لقينا **{len(supp_df)}** رابط مباشر جاهز للتحميل والدمج تلقائياً:")
 
-        if st.button("🚀 Auto-Download All Files & Extract Clean Emails", type="primary", use_container_width=True):
+        if st.button("🚀 Download All Files & Auto-Extract Clean Emails", type="primary", use_container_width=True):
             progress = st.progress(0)
             status_text = st.empty()
             
@@ -303,7 +334,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
             total_extracted = 0
             with ThreadPoolExecutor(max_workers=3) as executor:
-                futures = {executor.submit(process_offer_big_data, r, tmp_path): r for r in rows}
+                futures = {executor.submit(stream_extract_to_file, tmp_path, r["Direct File URL"]): r for r in rows if r["Direct File URL"].startswith("http")}
                 completed = 0
                 for f in as_completed(futures):
                     completed += 1
@@ -311,7 +342,7 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                     try:
                         count = f.result()
                         total_extracted += count
-                        status_text.text(f"Downloaded & Extracted file {completed}/{total} - Accumulated ~{total_extracted:,} emails...")
+                        status_text.text(f"Processed file {completed}/{total} - Extracted ~{total_extracted:,} emails...")
                     except Exception:
                         pass
 
@@ -333,17 +364,17 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
 
                 status_text.empty()
                 if unique_count > 0:
-                    st.success(f"Done! Downloaded files and cleaned {unique_count:,} unique emails (from {total_extracted:,} total).")
+                    st.success(f"Done! Extracted & cleaned {unique_count:,} unique emails (from {total_extracted:,} total).")
                     with open(final_temp_path, "rb") as f_download:
                         st.download_button(
-                            label=f"💾 Download Cleaned Emails Master File ({unique_count:,} Emails)",
+                            label=f"💾 Download Cleaned Master File ({unique_count:,} Emails)",
                             data=f_download,
-                            file_name=f"suppression_emails_{s_name.replace(' ', '_')}.txt",
+                            file_name=f"suppression_master_{s_name.replace(' ', '_')}.txt",
                             mime="text/plain",
                             use_container_width=True
                         )
                 else:
-                    st.warning("No emails could be extracted directly from URLs. Use the links in table to download manually if files are private.")
+                    st.warning("No emails extracted. Check if the generated links require active browser login.")
             except Exception as e:
                 st.error(f"Error: {str(e)}")
             finally:
