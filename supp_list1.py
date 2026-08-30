@@ -19,13 +19,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Initialize session state variables
+# Initialize state management
 if "scan_results" not in st.session_state:
     st.session_state["scan_results"] = None
 if "downloaded_files" not in st.session_state:
     st.session_state["downloaded_files"] = {}  # {offer_id: [(filename, bytes, mime)]}
 if "diagnostics_log" not in st.session_state:
     st.session_state["diagnostics_log"] = {}
+if "sort_by" not in st.session_state:
+    st.session_state["sort_by"] = "Offer ID"
+if "sort_order" not in st.session_state:
+    st.session_state["sort_order"] = True  # True = Ascending, False = Descending
 
 def get_session():
     s = requests.Session()
@@ -363,89 +367,95 @@ with st.sidebar:
                                 "Offer Name": str(offer_name),
                                 "Suppression ID": int(suppression_id) if str(suppression_id).isdigit() else suppression_id,
                                 "Status": str(offer_status),
-                                "Has Suppression": "Yes" if str(suppression_id) != "0" or direct_urls else "No",
                                 "Download URLs": "\n".join(direct_urls)
                             })
 
                         st.session_state["scan_results"] = pd.DataFrame(processed)
                         st.session_state["headers_used"] = headers_used
-                        st.session_state["downloaded_files"] = {}  # Reset previous downloads
+                        st.session_state["downloaded_files"] = {}
+                        st.session_state["diagnostics_log"] = {}
                         st.success(f"Successfully scanned {len(processed)} offers!")
                 except Exception as error:
                     st.error(f"Error while scanning: {error}")
 
-# Main Data View
+# Interactive Table View
 if st.session_state["scan_results"] is not None and not st.session_state["scan_results"].empty:
     df = st.session_state["scan_results"]
     headers_used = st.session_state.get("headers_used", {})
 
-    # Filter to show only available suppression offers
     supp_df = df[(df["Suppression ID"] != 0) | (df["Download URLs"] != "")].copy()
 
-    st.subheader(f"📋 Suppression Lists Found ({len(supp_df)} Offers)")
-    st.caption("💡 **Tip:** تقدر تبرّك على رُوّاس العوامد (Offer ID, Suppression ID...) فـ الجدول باش ترتّبهم من الصغير للبيطون ولا العكس.")
+    st.subheader(f"📋 Suppression Lists ({len(supp_df)} Offers)")
 
-    # Show Interactive DataFrame with Sorting Enabled
-    st.dataframe(
-        supp_df[["Offer ID", "Offer Name", "Suppression ID", "Status", "Has Suppression"]],
-        use_container_width=True,
-        hide_index=True
-    )
+    # Sorting Controls
+    sort_col1, sort_col2 = st.columns([2, 2])
+    with sort_col1:
+        sort_by = st.selectbox("Sort By:", ["Offer ID", "Suppression ID", "Offer Name"], index=0)
+    with sort_col2:
+        sort_order = st.radio("Order:", ["Ascending (من الصغير للبيطون)", "Descending (من البيطون للصغير)"], index=0)
+
+    ascending = True if "Ascending" in sort_order else False
+    supp_df = supp_df.sort_values(by=sort_by, ascending=ascending)
 
     st.divider()
 
-    # File Fetching & Permanent Download Section
-    st.subheader("📥 Action Panel: Download Files")
+    # Table Header Row
+    h1, h2, h3, h4, h5 = st.columns([1.2, 4, 1.5, 1.2, 3])
+    with h1: st.markdown("**Offer ID**")
+    with h2: st.markdown("**Offer Name**")
+    with h3: st.markdown("**Suppression ID**")
+    with h4: st.markdown("**Status**")
+    with h5: st.markdown("**Action / File**")
     
-    col_select, col_btn = st.columns([3, 1])
-    
-    with col_select:
-        # Select offer from interactive dropdown
-        offer_options = {f"Offer #{row['Offer ID']} - {row['Offer Name']} (Supp ID: {row['Suppression ID']})": row['Offer ID'] 
-                         for _, row in supp_df.iterrows()}
-        selected_label = st.selectbox("اختار الـ Offer اللي بغيتي تتيليشارجي Suppression ديايلو:", list(offer_options.keys()))
-        selected_offer_id = offer_options[selected_label]
+    st.divider()
 
-    selected_row = supp_df[supp_df["Offer ID"] == selected_offer_id].iloc[0]
+    # Table Body Rows
+    for idx, row in supp_df.iterrows():
+        offer_id = row["Offer ID"]
+        supp_id = row["Suppression ID"]
+        
+        c1, c2, c3, c4, c5 = st.columns([1.2, 4, 1.5, 1.2, 3])
+        
+        with c1:
+            st.write(f"#{offer_id}")
+        with c2:
+            st.write(row["Offer Name"])
+        with c3:
+            st.write(f"`{supp_id}`")
+        with c4:
+            st.write(row["Status"])
+        with c5:
+            # Check if file has already been downloaded
+            if offer_id in st.session_state["downloaded_files"]:
+                for file_idx, (filename, content, mime) in enumerate(st.session_state["downloaded_files"][offer_id]):
+                    st.download_button(
+                        label=f"💾 Save {filename.split('.')[-1].upper()}",
+                        data=content,
+                        file_name=filename,
+                        mime=mime,
+                        key=f"dl_saved_{offer_id}_{file_idx}",
+                        use_container_width=True
+                    )
+            else:
+                if st.button("⬇️ Get File", key=f"btn_get_{offer_id}_{idx}", use_container_width=True):
+                    direct_urls = [x.strip() for x in str(row["Download URLs"]).split("\n") if x.strip()]
+                    with st.spinner("Downloading..."):
+                        file_bytes, ext, diagnostics = download_file_bytes(
+                            offer_id, supp_id, direct_urls, headers_used
+                        )
+                        st.session_state["diagnostics_log"][offer_id] = diagnostics
 
-    with col_btn:
-        st.write("") # Spacing
-        st.write("") 
-        if st.button("⬇️ Get File", key="get_file_btn", use_container_width=True):
-            direct_urls = [x.strip() for x in str(selected_row["Download URLs"]).split("\n") if x.strip()]
-            with st.spinner("Downloading suppression file..."):
-                file_bytes, ext, diagnostics = download_file_bytes(
-                    selected_row["Offer ID"],
-                    selected_row["Suppression ID"],
-                    direct_urls,
-                    headers_used
-                )
-                st.session_state["diagnostics_log"][selected_offer_id] = diagnostics
+                        if file_bytes:
+                            saved_files = make_final_file(file_bytes, ext, offer_id)
+                            st.session_state["downloaded_files"][offer_id] = saved_files
+                            st.rerun()
+                        else:
+                            st.error("Failed.")
 
-                if file_bytes:
-                    saved_files = make_final_file(file_bytes, ext, selected_row["Offer ID"])
-                    st.session_state["downloaded_files"][selected_offer_id] = saved_files
-                    st.success("File downloaded successfully! Available below.")
-                else:
-                    st.error("ما قدرناش نحمّلو الملف. شوف التفاصيل تحت.")
-
-    # Show Download Buttons permanently (If already fetched)
-    if selected_offer_id in st.session_state["downloaded_files"]:
-        st.info(f"💾 Files Ready for Offer **#{selected_offer_id}**:")
-        file_cols = st.columns(len(st.session_state["downloaded_files"][selected_offer_id]))
-        for idx, (filename, content, mime) in enumerate(st.session_state["downloaded_files"][selected_offer_id]):
-            with file_cols[idx]:
-                st.download_button(
-                    label=f"💾 Save {filename}",
-                    data=content,
-                    file_name=filename,
-                    mime=mime,
-                    key=f"perm_download_{selected_offer_id}_{idx}",
-                    use_container_width=True
-                )
-
-    # Display diagnostics if available
-    if selected_offer_id in st.session_state["diagnostics_log"] and selected_offer_id not in st.session_state["downloaded_files"]:
-        with st.expander("🔍 Diagnostics Log"):
-            for line in st.session_state["diagnostics_log"][selected_offer_id]:
-                st.code(line)
+        # Optional Expander for diagnostics if failed
+        if offer_id in st.session_state["diagnostics_log"] and offer_id not in st.session_state["downloaded_files"]:
+            with st.expander(f"🔍 Diagnostics for Offer #{offer_id}"):
+                for line in st.session_state["diagnostics_log"][offer_id]:
+                    st.code(line)
+        
+        st.markdown("<hr style='margin: 4px 0px; border-top: 1px solid #333;'>", unsafe_allow_html=True)
