@@ -4,6 +4,8 @@ import pandas as pd
 import json
 import zipfile
 import gzip
+import tarfile
+import rarfile
 import io
 import os
 import re
@@ -13,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="Affiliate Suppression Merger - Big Data Edition", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Affiliate Suppression Merger - Universal Archive Edition", page_icon="🛡️", layout="wide")
 
 EMAIL_REGEX = re.compile(rb'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+')
 
@@ -74,7 +76,7 @@ def fetch_all_offers(base_url, auth_method, api_key, custom_header_name):
     
     if len(first_page) >= 500:
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = [executor.submit(fetch_single_page, base_endpoint, p, 500, headers) for p in range(2, 20)]
+            futures = [executor.submit(fetch_single_page, base_endpoint, p, 500, headers) for p in range(2, 25)]
             for future in as_completed(futures):
                 try:
                     res = future.result()
@@ -94,10 +96,11 @@ def deep_search_url(obj):
         str_obj = str(obj)
 
     patterns = [
-        r'https?://[^\s"]+\.(?:zip|gz|csv|txt|tar)[^\s"]*',
+        r'https?://[^\s"]+\.(?:zip|rar|7z|gz|csv|txt|tar)[^\s"]*',
         r'https?://[^\s"]*optizmo[^\s"]*',
         r'https?://[^\s"]*unsubcentral[^\s"]*',
-        r'https?://[^\s"]*suppress[^\s"]*'
+        r'https?://[^\s"]*suppress[^\s"]*',
+        r'https?://[^\s"]*eflow[^\s"]*/suppression[^\s"]*'
     ]
     
     for pat in patterns:
@@ -124,73 +127,98 @@ def resolve_dl_url(url):
         return ""
     url_str = url.strip()
     if "optizmo" in url_str.lower():
-        if not url_str.endswith("/download") and not re.search(r'\.(zip|gz|txt|csv)$', url_str, re.I):
+        if not url_str.endswith("/download") and not re.search(r'\.(zip|rar|7z|gz|txt|csv)$', url_str, re.I):
             url_str = url_str.rstrip("/") + "/download"
     try:
         session = get_session()
         res = session.get(url_str, timeout=10, verify=False, allow_redirects=True)
         if "text/html" in res.headers.get("Content-Type", "").lower():
-            m = re.findall(r'href=["\'](https?://[^"\']+\.(?:zip|gz|csv|txt))[["\']', res.text, re.I)
+            m = re.findall(r'href=["\'](https?://[^"\']+\.(?:zip|rar|7z|gz|csv|txt))[["\']', res.text, re.I)
             if m:
                 return m[0]
         return res.url
     except Exception:
         return url_str
 
+def parse_stream_lines(file_obj, temp_file_path):
+    count = 0
+    with open(temp_file_path, "a", encoding="utf-8") as out:
+        for line in file_obj:
+            for em in EMAIL_REGEX.findall(line):
+                out.write(em.decode('utf-8', errors='ignore').lower() + "\n")
+                count += 1
+    return count
+
 def stream_extract_to_file(temp_file_path, url):
-    """
-    Downloads and extracts emails line by line/chunk by chunk directly to a disk buffer.
-    Prevents RAM crash when handling millions of entries.
-    """
     session = get_session()
     count = 0
     try:
-        with session.get(url, stream=True, timeout=60, verify=False) as resp:
+        with session.get(url, stream=True, timeout=90, verify=False) as resp:
             if resp.status_code != 200:
                 return 0
             
-            # Save raw bytes to temp file first to avoid RAM overhead
             with tempfile.NamedTemporaryFile(delete=False) as raw_tmp:
                 for chunk in resp.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         raw_tmp.write(chunk)
                 raw_path = raw_tmp.name
 
-            # Extract emails from disk file
-            with open(temp_file_path, "a", encoding="utf-8") as out:
-                # Try Zip
-                try:
-                    with zipfile.ZipFile(raw_path, 'r') as z:
-                        for name in z.namelist():
-                            if not name.endswith('/'):
-                                with z.open(name) as zf:
-                                    for line in zf:
-                                        for em in EMAIL_REGEX.findall(line):
-                                            out.write(em.decode('utf-8', errors='ignore').lower() + "\n")
-                                            count += 1
-                    os.remove(raw_path)
-                    return count
-                except Exception:
-                    pass
+            # 1. Try Standard ZIP
+            try:
+                with zipfile.ZipFile(raw_path, 'r') as z:
+                    for name in z.namelist():
+                        if not name.endswith('/'):
+                            with z.open(name) as zf:
+                                count += parse_stream_lines(zf, temp_file_path)
+                os.remove(raw_path)
+                return count
+            except Exception:
+                pass
 
-                # Try Gzip
-                try:
-                    with gzip.open(raw_path, 'rb') as gz:
-                        for line in gz:
-                            for em in EMAIL_REGEX.findall(line):
-                                out.write(em.decode('utf-8', errors='ignore').lower() + "\n")
-                                count += 1
-                    os.remove(raw_path)
-                    return count
-                except Exception:
-                    pass
+            # 2. Try RAR (WinRAR Archives)
+            try:
+                with rarfile.RarFile(raw_path, 'r') as rf:
+                    for name in rf.namelist():
+                        if not name.endswith('/'):
+                            with rf.open(name) as rff:
+                                count += parse_stream_lines(rff, temp_file_path)
+                os.remove(raw_path)
+                return count
+            except Exception:
+                pass
 
-                # Plain Text/CSV
+            # 3. Try TAR / TAR.GZ
+            try:
+                with tarfile.open(raw_path, 'r:*') as tar:
+                    for member in tar.getmembers():
+                        if member.isfile():
+                            f = tar.extractfile(member)
+                            if f:
+                                count += parse_stream_lines(f, temp_file_path)
+                os.remove(raw_path)
+                return count
+            except Exception:
+                pass
+
+            # 4. Try GZIP
+            try:
+                with gzip.open(raw_path, 'rb') as gz:
+                    count += parse_stream_lines(gz, temp_file_path)
+                os.remove(raw_path)
+                return count
+            except Exception:
+                pass
+
+            # 5. Fallback Plain Text / CSV / Uncompressed
+            try:
                 with open(raw_path, 'rb') as f:
-                    for line in f:
-                        for em in EMAIL_REGEX.findall(line):
-                            out.write(em.decode('utf-8', errors='ignore').lower() + "\n")
-                            count += 1
+                    count += parse_stream_lines(f, temp_file_path)
+                os.remove(raw_path)
+                return count
+            except Exception:
+                pass
+
+            if os.path.exists(raw_path):
                 os.remove(raw_path)
 
     except Exception:
@@ -207,7 +235,7 @@ def process_offer_big_data(row, headers_used, output_temp_file):
         return stream_extract_to_file(output_temp_file, target)
     return 0
 
-st.title("🛡️ Suppression List Merger & Cleaner (Big Data Edition)")
+st.title("🛡️ Suppression List Merger & Cleaner (Universal Archive Edition)")
 
 with st.sidebar:
     st.header("Sponsor Configuration")
@@ -286,16 +314,15 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
     
     if not supp_df.empty:
         st.markdown("---")
-        st.subheader("⚡ High-Scale Merge & Extract (Multi-Million Ready)")
+        st.subheader("⚡ High-Scale Merge & Extract (ZIP / RAR / TAR / GZ Support)")
         
-        if st.button("🚀 Fast Extract & Clean Millions of Suppressions", type="primary", use_container_width=True):
+        if st.button("🚀 Fast Extract & Clean All Suppressions", type="primary", use_container_width=True):
             progress = st.progress(0)
             status_text = st.empty()
             
             rows = supp_df.to_dict('records')
             total = len(rows)
 
-            # Temp file to accumulate raw extracted emails directly to disk
             with tempfile.NamedTemporaryFile(delete=False, mode="w+", encoding="utf-8") as tmp_merged:
                 tmp_path = tmp_merged.name
 
@@ -316,7 +343,6 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
             progress.empty()
             status_text.text("Sorting & Deduplicating extracted emails on disk...")
 
-            # Fast Chunked Deduplication to handle millions without RAM spike
             final_temp_path = tmp_path + "_clean.txt"
             unique_count = 0
             
@@ -329,13 +355,9 @@ if "scan_results" in st.session_state and not st.session_state["scan_results"].e
                             unique_emails.add(em)
                             outfile.write(em + "\n")
                             unique_count += 1
-                            
-                            # Memory flush safeguard if unique count exceeds safe memory limits
-                            if len(unique_emails) > 5000000:
-                                pass # Keep running smoothly
 
                 status_text.empty()
-                st.success(f"Successfully processed millions! Found {unique_count:,} unique emails (from {total_extracted:,} total).")
+                st.success(f"Successfully processed archives! Found {unique_count:,} unique emails (from {total_extracted:,} total).")
 
                 with open(final_temp_path, "rb") as f_download:
                     st.download_button(
