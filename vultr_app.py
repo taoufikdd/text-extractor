@@ -204,16 +204,15 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         "user_data": USER_DATA_B64,
         "hostname": hostname,
         "label": hostname,
-        "backups": "disabled",
-        "enable_ipv6": True  # <-- Hna T-zadat l-option dyal IPv6
+        "backups": "disabled"
     }
     
     try:
         res = requests.post("https://api.vultr.com/v2/instances", headers=headers, json=payload, proxies=current_proxies, timeout=15)
         if res.status_code == 202:
             inst_id = res.json().get("instance", {}).get("id")
-            ip, ipv6 = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
-            formatted = f"{ip},{ipv6},22,root,{DEFAULT_ROOT_PASSWORD}"
+            ip, _ = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
+            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
             return True, formatted, None
         else:
             return False, None, f"HTTP {res.status_code}: {res.text}"
@@ -395,7 +394,7 @@ with tab2:
                                 st.error(f"Deployment Error: {err}")
                     
                     status_box.success("🎉 Deployment Complete!")
-                    st.text_area("Created Servers List (ipv4,ipv6,port,user,pass):", value="\n".join(results), height=150)
+                    st.text_area("Created Servers List (ipv4,port,user,pass):", value="\n".join(results), height=150)
 
 # --- TAB 3: حذف السيرفرات ---
 with tab3:
