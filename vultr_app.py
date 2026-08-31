@@ -204,7 +204,8 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         "user_data": USER_DATA_B64,
         "hostname": hostname,
         "label": hostname,
-        "backups": "disabled"
+        "backups": "disabled",
+        "enable_ipv6": True  # IPv6 مفعل ف السيرفر
     }
     
     try:
@@ -212,7 +213,7 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         if res.status_code == 202:
             inst_id = res.json().get("instance", {}).get("id")
             ip, _ = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
-            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
+            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"  # النتيجة بدون ipv6
             return True, formatted, None
         else:
             return False, None, f"HTTP {res.status_code}: {res.text}"
