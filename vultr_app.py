@@ -171,20 +171,23 @@ def get_vultr_regions(api_key, proxies):
         pass
     return []
 
-def wait_for_ip(api_key, instance_id, proxies, max_retries=20):
+def wait_for_ip_and_ipv6(api_key, instance_id, proxies, max_retries=20):
     headers = {"Authorization": f"Bearer {api_key}"}
     url = f"https://api.vultr.com/v2/instances/{instance_id}"
     for _ in range(max_retries):
         try:
             res = requests.get(url, headers=headers, proxies=proxies, timeout=10)
             if res.status_code == 200:
-                main_ip = res.json().get("instance", {}).get("main_ip", "")
+                inst_data = res.json().get("instance", {})
+                main_ip = inst_data.get("main_ip", "")
+                v6_main_ip = inst_data.get("v6_main_ip", "")
+                
                 if main_ip and main_ip != "0.0.0.0":
-                    return main_ip
+                    return main_ip, v6_main_ip
         except Exception:
             pass
         time.sleep(3)
-    return "0.0.0.0"
+    return "0.0.0.0", ""
 
 def deploy_single_server(counter, code, os_id, current_api_key, current_proxies):
     hostname = f"vultr-server-{counter}"
@@ -201,15 +204,16 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         "user_data": USER_DATA_B64,
         "hostname": hostname,
         "label": hostname,
-        "backups": "disabled"
+        "backups": "disabled",
+        "enable_ipv6": True  # <-- Hna T-zadat l-option dyal IPv6
     }
     
     try:
         res = requests.post("https://api.vultr.com/v2/instances", headers=headers, json=payload, proxies=current_proxies, timeout=15)
         if res.status_code == 202:
             inst_id = res.json().get("instance", {}).get("id")
-            ip = wait_for_ip(current_api_key, inst_id, current_proxies)
-            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
+            ip, ipv6 = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
+            formatted = f"{ip},{ipv6},22,root,{DEFAULT_ROOT_PASSWORD}"
             return True, formatted, None
         else:
             return False, None, f"HTTP {res.status_code}: {res.text}"
@@ -317,7 +321,8 @@ with tab1:
         for inst in instances:
             table_data.append({
                 "ID": inst.get("id"),
-                "IP Address": inst.get("main_ip", "N/A"),
+                "IPv4 Address": inst.get("main_ip", "N/A"),
+                "IPv6 Address": inst.get("v6_main_ip", "N/A"),
                 "Status": inst.get("status"),
                 "Region": inst.get("region"),
                 "Label": inst.get("label", "N/A"),
@@ -390,7 +395,7 @@ with tab2:
                                 st.error(f"Deployment Error: {err}")
                     
                     status_box.success("🎉 Deployment Complete!")
-                    st.text_area("Created Servers List (ip,port,user,pass):", value="\n".join(results), height=150)
+                    st.text_area("Created Servers List (ipv4,ipv6,port,user,pass):", value="\n".join(results), height=150)
 
 # --- TAB 3: حذف السيرفرات ---
 with tab3:
