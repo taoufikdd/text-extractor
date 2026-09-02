@@ -20,7 +20,6 @@ st.set_page_config(
 )
 
 ACCOUNTS_FILE = "vultr_accounts.json"
-PLAN_ID = "vc2-2c-4gb"
 DEFAULT_ROOT_PASSWORD = "qRdkWWKIhbb9q6Nmwi3mfrt"
 
 USER_DATA_SCRIPT = f"""#!/bin/bash
@@ -171,6 +170,20 @@ def get_vultr_regions(api_key, proxies):
         pass
     return []
 
+def get_vultr_plans(api_key, proxies):
+    """جلب قائمة الـ Plans المتاحة"""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get("https://api.vultr.com/v2/plans", headers=headers, proxies=proxies, timeout=12)
+        if res.status_code == 200:
+            plans = res.json().get("plans", [])
+            # ترتيب الـ plans وتصفيتها للخيارات الشائعة
+            sorted_plans = sorted(plans, key=lambda x: x.get("monthly_cost", 0))
+            return sorted_plans
+    except Exception:
+        pass
+    return []
+
 def wait_for_ip_and_ipv6(api_key, instance_id, proxies, max_retries=20):
     headers = {"Authorization": f"Bearer {api_key}"}
     url = f"https://api.vultr.com/v2/instances/{instance_id}"
@@ -189,7 +202,7 @@ def wait_for_ip_and_ipv6(api_key, instance_id, proxies, max_retries=20):
         time.sleep(3)
     return "0.0.0.0", ""
 
-def deploy_single_server(counter, code, os_id, current_api_key, current_proxies):
+def deploy_single_server(counter, code, os_id, plan_id, current_api_key, current_proxies):
     hostname = f"vultr-server-{counter}"
     headers = {
         "Authorization": f"Bearer {current_api_key}",
@@ -197,7 +210,7 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
     }
     payload = {
         "region": code,
-        "plan": PLAN_ID,
+        "plan": plan_id,
         "os_id": os_id,
         "user_scheme": "root",
         "password": DEFAULT_ROOT_PASSWORD,
@@ -205,7 +218,7 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         "hostname": hostname,
         "label": hostname,
         "backups": "disabled",
-        "enable_ipv6": True  # IPv6 مفعل ف السيرفر
+        "enable_ipv6": True
     }
     
     try:
@@ -213,7 +226,7 @@ def deploy_single_server(counter, code, os_id, current_api_key, current_proxies)
         if res.status_code == 202:
             inst_id = res.json().get("instance", {}).get("id")
             ip, _ = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
-            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"  # النتيجة بدون ipv6
+            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
             return True, formatted, None
         else:
             return False, None, f"HTTP {res.status_code}: {res.text}"
@@ -346,56 +359,81 @@ with tab2:
         else:
             st.success(f"Target OS: **{os_name}** (ID: `{os_id}`)")
             
+            # جلب قائمة الـ Plans والـ Regions
+            plans_list = get_vultr_plans(current_api_key, current_proxies)
             regions_list = get_vultr_regions(current_api_key, current_proxies)
-            region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
             
-            selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
-            server_count = st.number_input("Total Number of Servers:", min_value=1, max_value=50, value=1)
-            
-            if st.button("🚀 Start Deployment"):
-                if not selected_region_labels:
-                    st.error("Please select at least one region.")
-                else:
-                    selected_codes = [region_options[lbl] for lbl in selected_region_labels]
-                    num_regions = len(selected_codes)
-                    base_per = server_count // num_regions
-                    remainder = server_count % num_regions
-                    
-                    status_box = st.empty()
-                    progress_bar = st.progress(0)
-                    
-                    tasks = []
-                    counter = 0
-                    for idx, code in enumerate(selected_codes):
-                        count_for_reg = base_per + (1 if idx < remainder else 0)
-                        for _ in range(count_for_reg):
-                            counter += 1
-                            tasks.append((counter, code))
-                    
-                    results = []
-                    completed_count = 0
-                    status_box.info(f"⚡ Deploying {server_count} server(s) in parallel...")
+            if not plans_list:
+                st.error("Could not fetch Vultr Plans list.")
+            else:
+                # تجهيز قائمة الـ Plans للاختيار
+                plan_options = {
+                    f"{p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} vCPU | ${p.get('monthly_cost')}/mo": p.get('id')
+                    for p in plans_list
+                }
+                
+                # إيجاد القيمة الافتراضية vc2-2c-4gb إلى كانت موجودة
+                default_plan_index = 0
+                for idx, (label, p_id) in enumerate(plan_options.items()):
+                    if p_id == "vc2-2c-4gb":
+                        default_plan_index = idx
+                        break
 
-                    with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
-                        futures = [
-                            executor.submit(deploy_single_server, c, reg, os_id, current_api_key, current_proxies)
-                            for c, reg in tasks
-                        ]
+                selected_plan_label = st.selectbox(
+                    "⚙️ Select Server Plan / Configuration:",
+                    options=list(plan_options.keys()),
+                    index=default_plan_index
+                )
+                selected_plan_id = plan_options[selected_plan_label]
+
+                region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
+                selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
+                server_count = st.number_input("Total Number of Servers:", min_value=1, max_value=50, value=1)
+                
+                if st.button("🚀 Start Deployment"):
+                    if not selected_region_labels:
+                        st.error("Please select at least one region.")
+                    else:
+                        selected_codes = [region_options[lbl] for lbl in selected_region_labels]
+                        num_regions = len(selected_codes)
+                        base_per = server_count // num_regions
+                        remainder = server_count % num_regions
                         
-                        for future in as_completed(futures):
-                            success_dep, formatted_res, err = future.result()
-                            completed_count += 1
-                            progress_bar.progress(completed_count / server_count)
+                        status_box = st.empty()
+                        progress_bar = st.progress(0)
+                        
+                        tasks = []
+                        counter = 0
+                        for idx, code in enumerate(selected_codes):
+                            count_for_reg = base_per + (1 if idx < remainder else 0)
+                            for _ in range(count_for_reg):
+                                counter += 1
+                                tasks.append((counter, code))
+                        
+                        results = []
+                        completed_count = 0
+                        status_box.info(f"⚡ Deploying {server_count} server(s) using Plan [{selected_plan_id}] in parallel...")
+
+                        with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
+                            futures = [
+                                executor.submit(deploy_single_server, c, reg, os_id, selected_plan_id, current_api_key, current_proxies)
+                                for c, reg in tasks
+                            ]
                             
-                            if success_dep and formatted_res:
-                                results.append(formatted_res)
-                                with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
-                                    f_out.write(formatted_res + "\n")
-                            else:
-                                st.error(f"Deployment Error: {err}")
-                    
-                    status_box.success("🎉 Deployment Complete!")
-                    st.text_area("Created Servers List (ipv4,port,user,pass):", value="\n".join(results), height=150)
+                            for future in as_completed(futures):
+                                success_dep, formatted_res, err = future.result()
+                                completed_count += 1
+                                progress_bar.progress(completed_count / server_count)
+                                
+                                if success_dep and formatted_res:
+                                    results.append(formatted_res)
+                                    with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
+                                        f_out.write(formatted_res + "\n")
+                                else:
+                                    st.error(f"Deployment Error: {err}")
+                        
+                        status_box.success("🎉 Deployment Complete!")
+                        st.text_area("Created Servers List (ipv4,port,user,pass):", value="\n".join(results), height=150)
 
 # --- TAB 3: حذف السيرفرات ---
 with tab3:
