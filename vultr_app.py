@@ -111,7 +111,6 @@ def test_proxy_connection(proxies):
 # 3. وظائف API Vultr والتحقق من حالة الحساب
 # ==========================================
 def check_account_health(api_key, proxies):
-    """فحص حالة الحساب بالتفصيل للتأكد من عدم حظره أو تعليقه"""
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         res = requests.get("https://api.vultr.com/v2/account", headers=headers, proxies=proxies, timeout=12)
@@ -171,20 +170,31 @@ def get_vultr_regions(api_key, proxies):
     return []
 
 def get_vultr_plans(api_key, proxies):
-    """جلب قائمة الـ Plans المتاحة"""
+    """جلب الـ Plans وتصفيتها لإظهار Dedicated CPU فقط"""
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         res = requests.get("https://api.vultr.com/v2/plans", headers=headers, proxies=proxies, timeout=12)
         if res.status_code == 200:
             plans = res.json().get("plans", [])
-            sorted_plans = sorted(plans, key=lambda x: x.get("monthly_cost", 0))
+            
+            # فلتار الـ Plans لإبقاء Dedicated CPU فقط (vx1, vxd, dedicated)
+            dedicated_plans = []
+            for p in plans:
+                p_id = p.get("id", "").lower()
+                p_type = p.get("type", "").lower()
+                
+                # التحقق هل نوع الخطة ينتمي لـ Dedicated CPU
+                if "dedicated" in p_type or p_id.startswith("vx1") or p_id.startswith("vxd"):
+                    dedicated_plans.append(p)
+            
+            # ترتيب الحطط حسب السعر
+            sorted_plans = sorted(dedicated_plans, key=lambda x: x.get("monthly_cost", 0))
             return sorted_plans
     except Exception:
         pass
     return []
 
 def attach_dedicated_ip(api_key, instance_id, region_code, proxies):
-    """ربط IP إضافي (Dedicated IP) بالسيرفر"""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -195,14 +205,12 @@ def attach_dedicated_ip(api_key, instance_id, region_code, proxies):
         "label": f"dedicated-ip-{instance_id}"
     }
     try:
-        # 1. إنشاء Reserved IP
         res = requests.post("https://api.vultr.com/v2/reserved-ips", headers=headers, json=payload, proxies=proxies, timeout=12)
         if res.status_code in [200, 201]:
             reserved_ip_data = res.json().get("reserved_ip", {})
             reserved_ip_id = reserved_ip_data.get("id")
             subnet = reserved_ip_data.get("subnet")
 
-            # 2. ربطه مع الـ Instance
             attach_payload = {"instance_id": instance_id}
             att_res = requests.post(f"https://api.vultr.com/v2/reserved-ips/{reserved_ip_id}/attach", headers=headers, json=attach_payload, proxies=proxies, timeout=12)
             if att_res.status_code in [200, 202]:
@@ -254,7 +262,6 @@ def deploy_single_server(counter, code, os_id, plan_id, need_dedicated_ip, curre
             inst_id = res.json().get("instance", {}).get("id")
             ip, _ = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
             
-            # ربط Dedicated IP إذا كان الخيار مفعل
             extra_ip_str = ""
             if need_dedicated_ip:
                 ok_ip, extra_ip = attach_dedicated_ip(current_api_key, inst_id, code, current_proxies)
@@ -289,7 +296,6 @@ if st.sidebar.button("🚪 Logout"):
     st.session_state["authenticated"] = False
     st.rerun()
 
-# إضافة حساب جديد
 with st.sidebar.expander("➕ Add New Vultr Account"):
     acc_name = st.text_input("Account Label (e.g. Acc_1)")
     acc_key = st.text_input("API Key", type="password")
@@ -317,7 +323,6 @@ current_api_key = active_acc["api_key"]
 current_proxy_str = active_acc["proxy"]
 current_proxies = parse_proxy(current_proxy_str)
 
-# زر فحص حالة الحساب
 if st.sidebar.button("🔍 Test Account Status"):
     ok, code, msg = check_account_health(current_api_key, current_proxies)
     if ok:
@@ -346,7 +351,6 @@ else:
 # ==========================================
 st.title(f"🖥️ Vultr Manager — [{selected_acc_name}]")
 
-# فحص تلقائي سريع لحالة الحساب وتنبيه المستخدم
 is_healthy, status_code_acc, acc_details = check_account_health(current_api_key, current_proxies)
 
 if not is_healthy:
@@ -381,9 +385,9 @@ with tab1:
     else:
         st.info("No active instances found in this account.")
 
-# --- TAB 2: إنشاء سيرفرات جديدة ---
+# --- TAB 2: إنشاء سيرفرات جديدة (Dedicated CPU فقط) ---
 with tab2:
-    st.subheader("Deploy New Servers")
+    st.subheader("Deploy New Servers (Dedicated CPU)")
     
     if not is_healthy:
         st.warning("⚠️ You cannot deploy new servers because the selected account has errors or is suspended.")
@@ -398,23 +402,17 @@ with tab2:
             regions_list = get_vultr_regions(current_api_key, current_proxies)
             
             if not plans_list:
-                st.error("Could not fetch Vultr Plans list.")
+                st.error("No Dedicated CPU Plans found or API error.")
             else:
                 plan_options = {
-                    f"{p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} vCPU | ${p.get('monthly_cost')}/mo": p.get('id')
+                    f"🔥 {p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} Dedicated vCPU | ${p.get('monthly_cost')}/mo": p.get('id')
                     for p in plans_list
                 }
                 
-                default_plan_index = 0
-                for idx, (label, p_id) in enumerate(plan_options.items()):
-                    if p_id == "vc2-2c-4gb":
-                        default_plan_index = idx
-                        break
-
                 selected_plan_label = st.selectbox(
-                    "⚙️ Select Server Plan / Configuration:",
+                    "⚙️ Select Dedicated CPU Plan:",
                     options=list(plan_options.keys()),
-                    index=default_plan_index
+                    index=0
                 )
                 selected_plan_id = plan_options[selected_plan_label]
 
