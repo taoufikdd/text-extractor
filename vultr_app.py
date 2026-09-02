@@ -177,12 +177,39 @@ def get_vultr_plans(api_key, proxies):
         res = requests.get("https://api.vultr.com/v2/plans", headers=headers, proxies=proxies, timeout=12)
         if res.status_code == 200:
             plans = res.json().get("plans", [])
-            # ترتيب الـ plans وتصفيتها للخيارات الشائعة
             sorted_plans = sorted(plans, key=lambda x: x.get("monthly_cost", 0))
             return sorted_plans
     except Exception:
         pass
     return []
+
+def attach_dedicated_ip(api_key, instance_id, region_code, proxies):
+    """ربط IP إضافي (Dedicated IP) بالسيرفر"""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "region": region_code,
+        "ip_type": "v4",
+        "label": f"dedicated-ip-{instance_id}"
+    }
+    try:
+        # 1. إنشاء Reserved IP
+        res = requests.post("https://api.vultr.com/v2/reserved-ips", headers=headers, json=payload, proxies=proxies, timeout=12)
+        if res.status_code in [200, 201]:
+            reserved_ip_data = res.json().get("reserved_ip", {})
+            reserved_ip_id = reserved_ip_data.get("id")
+            subnet = reserved_ip_data.get("subnet")
+
+            # 2. ربطه مع الـ Instance
+            attach_payload = {"instance_id": instance_id}
+            att_res = requests.post(f"https://api.vultr.com/v2/reserved-ips/{reserved_ip_id}/attach", headers=headers, json=attach_payload, proxies=proxies, timeout=12)
+            if att_res.status_code in [200, 202]:
+                return True, subnet
+    except Exception:
+        pass
+    return False, None
 
 def wait_for_ip_and_ipv6(api_key, instance_id, proxies, max_retries=20):
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -202,7 +229,7 @@ def wait_for_ip_and_ipv6(api_key, instance_id, proxies, max_retries=20):
         time.sleep(3)
     return "0.0.0.0", ""
 
-def deploy_single_server(counter, code, os_id, plan_id, current_api_key, current_proxies):
+def deploy_single_server(counter, code, os_id, plan_id, need_dedicated_ip, current_api_key, current_proxies):
     hostname = f"vultr-server-{counter}"
     headers = {
         "Authorization": f"Bearer {current_api_key}",
@@ -226,7 +253,15 @@ def deploy_single_server(counter, code, os_id, plan_id, current_api_key, current
         if res.status_code == 202:
             inst_id = res.json().get("instance", {}).get("id")
             ip, _ = wait_for_ip_and_ipv6(current_api_key, inst_id, current_proxies)
-            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}"
+            
+            # ربط Dedicated IP إذا كان الخيار مفعل
+            extra_ip_str = ""
+            if need_dedicated_ip:
+                ok_ip, extra_ip = attach_dedicated_ip(current_api_key, inst_id, code, current_proxies)
+                if ok_ip and extra_ip:
+                    extra_ip_str = f" | Dedicated_IP: {extra_ip}"
+
+            formatted = f"{ip},22,root,{DEFAULT_ROOT_PASSWORD}{extra_ip_str}"
             return True, formatted, None
         else:
             return False, None, f"HTTP {res.status_code}: {res.text}"
@@ -359,20 +394,17 @@ with tab2:
         else:
             st.success(f"Target OS: **{os_name}** (ID: `{os_id}`)")
             
-            # جلب قائمة الـ Plans والـ Regions
             plans_list = get_vultr_plans(current_api_key, current_proxies)
             regions_list = get_vultr_regions(current_api_key, current_proxies)
             
             if not plans_list:
                 st.error("Could not fetch Vultr Plans list.")
             else:
-                # تجهيز قائمة الـ Plans للاختيار
                 plan_options = {
                     f"{p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} vCPU | ${p.get('monthly_cost')}/mo": p.get('id')
                     for p in plans_list
                 }
                 
-                # إيجاد القيمة الافتراضية vc2-2c-4gb إلى كانت موجودة
                 default_plan_index = 0
                 for idx, (label, p_id) in enumerate(plan_options.items()):
                     if p_id == "vc2-2c-4gb":
@@ -385,6 +417,8 @@ with tab2:
                     index=default_plan_index
                 )
                 selected_plan_id = plan_options[selected_plan_label]
+
+                need_dedicated_ip = st.checkbox("📌 Attach Additional Dedicated Public IPv4 (+ $3/mo approx)", value=False)
 
                 region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
                 selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
@@ -416,7 +450,7 @@ with tab2:
 
                         with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
                             futures = [
-                                executor.submit(deploy_single_server, c, reg, os_id, selected_plan_id, current_api_key, current_proxies)
+                                executor.submit(deploy_single_server, c, reg, os_id, selected_plan_id, need_dedicated_ip, current_api_key, current_proxies)
                                 for c, reg in tasks
                             ]
                             
