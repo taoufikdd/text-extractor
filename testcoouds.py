@@ -4,44 +4,37 @@ import json
 
 st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
 
-st.title("⚡ CloudCenmax Bulk Server Deployment")
-st.markdown("قم بإنشاء السيرفرات دفعة واحدة مع أداة كشف وتتبع الأخطاء (Error Diagnostics).")
+st.title("⚡ CloudCenmax Bulk Server Deployment (Livewire Direct)")
+st.markdown("إنشاء السيرفرات مباشرة عبر مسار Laravel Livewire لتفادي خطأ 404.")
 
 # --- Simple Sidebar: API Key & Root Password ---
-st.sidebar.header("🔑 Authentication & Security")
-api_key = st.sidebar.text_input("CloudCenmax API Key", type="password", help="أدخل مفتاح الـ API الخاص بك")
+st.sidebar.header("🔑 Session & Password")
+api_key = st.sidebar.text_input("Session Cookie / Token", type="password", help="أدخل Cookie أو CSRF Token")
 root_password = st.sidebar.text_input("Root Password", value="qRdkWWKIhbb9q6Nmwi3mfrt", type="password")
 
-BASE_URL = "https://cloudcenmax.com/api/v1"
+LIVEWIRE_URL = "https://cloudcenmax.com/livewire/update"
 
-# --- Button to Test API Connection ---
+# --- Button to Test Livewire Connection ---
 if st.sidebar.button("🔌 Test API Connection"):
-    if not api_key:
-        st.sidebar.error("❌ أدخل API Key أولاً!")
-    else:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "X-API-Key": api_key,
-            "Accept": "application/json"
-        }
-        try:
-            # نحاول الاتصال بنقطة النهاية الخاصة بالـ User أو Profile
-            res = requests.get(f"{BASE_URL}/user", headers=headers, timeout=10)
-            if res.status_code == 200:
-                st.sidebar.success("✅ Connected successfully to API!")
-            elif res.status_code == 401:
-                st.sidebar.error("❌ Authentication Failed (401): API Key غير صحيح.")
-            elif res.status_code == 404:
-                # تجربة مسار آخر عام للتأكد
-                res_alt = requests.get(f"{BASE_URL}/locations", headers=headers, timeout=10)
-                if res_alt.status_code in [200, 401]:
-                    st.sidebar.warning(f"⚠️ API Reached (Status {res_alt.status_code}), Endpoint '/user' not found.")
-                else:
-                    st.sidebar.error(f"❌ Connection failed: Status {res.status_code}")
-            else:
-                st.sidebar.warning(f"⚠️ API Response Code: {res.status_code}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Connection Error: {str(e)}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "X-Livewire": "true",
+        "Content-Type": "application/json",
+        "Accept": "text/html, application/xhtml+xml",
+        "Cookie": api_key if api_key else ""
+    }
+    
+    # اختبار بسيط عن طريق إرسال Empty Payload لـ Livewire
+    try:
+        res = requests.post(LIVEWIRE_URL, json={"components": []}, headers=headers, timeout=10)
+        
+        # Livewire كيرجع 200 أو 419 (CSRF Mismatch) ولكن السيرفر موجود وكيستاجب!
+        if res.status_code in [200, 419]:
+            st.sidebar.success(f"✅ Livewire Endpoint Active! (Status: {res.status_code})")
+        else:
+            st.sidebar.error(f"❌ Connection Failed: Status {res.status_code}")
+    except Exception as e:
+        st.sidebar.error(f"❌ Connection Error: {str(e)}")
 
 # --- Locations Data (Dropdown Selection) ---
 LOCATIONS_DATA = {
@@ -139,88 +132,92 @@ for i in range(int(num_servers)):
 
 # --- Execution & Error Interface ---
 if st.button("🔥 Deploy All Servers Now", type="primary"):
-    if not api_key:
-        st.error("❌ يرجى إدخال API Key فـ الـ Sidebar أولاً!")
-    else:
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "X-API-Key": api_key,
-            "Content-Type": "application/json",
-            "Accept": "application/json"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "X-Livewire": "true",
+        "Content-Type": "application/json",
+        "Accept": "text/html, application/xhtml+xml",
+        "Cookie": api_key if api_key else "",
+        "Origin": "https://cloudcenmax.com",
+        "Referer": "https://cloudcenmax.com/deploy"
+    }
+
+    progress = st.progress(0)
+    status_box = st.container()
+    logs_and_errors = []
+
+    for idx, srv in enumerate(server_list):
+        payload = {
+            "components": [
+                {
+                    "snapshot": '{"memo":{"name":"deploy-cloud-server"}}',
+                    "updates": {},
+                    "calls": [
+                        {
+                            "path": "",
+                            "method": "deploy",
+                            "params": [
+                                {
+                                    "hostname": srv["hostname"],
+                                    "location": srv["location"],
+                                    "continent": srv["continent"],
+                                    "country": srv["country"],
+                                    "city": srv["city"],
+                                    "os": "almalinux-8.10",
+                                    "plan": "4vcpu-8gb-80gb",
+                                    "password": root_password,
+                                    "root_password": root_password
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
         }
 
-        progress = st.progress(0)
-        status_box = st.container()
-        
-        # قائمة لتجميع تفاصيل الأخطاء
-        logs_and_errors = []
-
-        for idx, srv in enumerate(server_list):
-            payload = {
-                "hostname": srv["hostname"],
-                "name": srv["hostname"],
-                "region": srv["location"],
-                "location": srv["location"],
-                "continent": srv["continent"],
-                "country": srv["country"],
-                "city": srv["city"],
-                "plan": "standard-4vcpu-8gb",
-                "vcpus": 4,
-                "ram": 8192,
-                "disk": 80,
-                "image": "almalinux-8.10-x64",
-                "os": "almalinux-8.10",
-                "password": root_password,
-                "root_password": root_password
-            }
-
-            try:
-                res = requests.post(f"{BASE_URL}/servers", json=payload, headers=headers, timeout=15)
-                
-                if res.status_code in [200, 201, 202]:
-                    status_box.success(
-                        f"✅ **{srv['hostname']}** created successfully! "
-                        f"(Location: {srv['location']})"
-                    )
-                else:
-                    status_box.error(
-                        f"❌ Failed **{srv['hostname']}**: HTTP Status {res.status_code}"
-                    )
-                    # حفظ تفاصيل الخطأ للعرض
-                    logs_and_errors.append({
-                        "hostname": srv["hostname"],
-                        "status_code": res.status_code,
-                        "url_called": f"{BASE_URL}/servers",
-                        "payload_sent": payload,
-                        "response_body": res.text
-                    })
-            except Exception as e:
-                status_box.error(f"❌ Connection Error on **{srv['hostname']}**: {str(e)}")
+        try:
+            res = requests.post(LIVEWIRE_URL, json=payload, headers=headers, timeout=15)
+            
+            if res.status_code == 200:
+                status_box.success(
+                    f"✅ **{srv['hostname']}** created successfully! (Location: {srv['location']})"
+                )
+            else:
+                status_box.error(
+                    f"❌ Failed **{srv['hostname']}**: HTTP Status {res.status_code}"
+                )
                 logs_and_errors.append({
                     "hostname": srv["hostname"],
-                    "status_code": "EXCEPTION",
-                    "url_called": f"{BASE_URL}/servers",
+                    "status_code": res.status_code,
+                    "url_called": LIVEWIRE_URL,
                     "payload_sent": payload,
-                    "response_body": str(e)
+                    "response_body": res.text
                 })
+        except Exception as e:
+            status_box.error(f"❌ Connection Error on **{srv['hostname']}**: {str(e)}")
+            logs_and_errors.append({
+                "hostname": srv["hostname"],
+                "status_code": "EXCEPTION",
+                "url_called": LIVEWIRE_URL,
+                "payload_sent": payload,
+                "response_body": str(e)
+            })
 
-            progress.progress((idx + 1) / len(server_list))
+        progress.progress((idx + 1) / len(server_list))
 
-        # --- Error Diagnostics Interface ---
-        if logs_and_errors:
-            st.markdown("---")
-            st.subheader("🚨 Detailed Error Logs & Diagnostics")
-            st.warning("تم تسجيل أخطاء أثناء تنفيذ الطلبات. يمكنك مراجعة التفاصيل أدناه لمعرفة السبب بالتحديد:")
-
-            for err in logs_and_errors:
-                with st.expander(f"❌ Error Log for: {err['hostname']} (Status: {err['status_code']})"):
-                    st.write("**URL Endpoint:**", err["url_called"])
-                    st.write("**Sent Payload:**")
-                    st.json(err["payload_sent"])
-                    st.write("**Server Response (Body):**")
-                    try:
-                        st.json(json.loads(err["response_body"]))
-                    except Exception:
-                        st.code(err["response_body"], language="html")
-        else:
-            st.balloons()
+    # --- Error Diagnostics Interface ---
+    if logs_and_errors:
+        st.markdown("---")
+        st.subheader("🚨 Detailed Error Logs & Diagnostics")
+        for err in logs_and_errors:
+            with st.expander(f"❌ Error Log for: {err['hostname']} (Status: {err['status_code']})"):
+                st.write("**URL Endpoint:**", err["url_called"])
+                st.write("**Sent Payload:**")
+                st.json(err["payload_sent"])
+                st.write("**Server Response (Body):**")
+                try:
+                    st.json(json.loads(err["response_body"]))
+                except Exception:
+                    st.code(err["response_body"], language="html")
+    else:
+        st.balloons()
