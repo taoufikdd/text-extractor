@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="CloudCenmax Manager", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
 
 st.title("⚡ CloudCenmax Bulk Deployer & Manager")
 
@@ -18,7 +18,6 @@ def get_headers(key):
         "Content-Type": "application/json"
     }
 
-# --- Helper API Functions ---
 def check_account_balance(key):
     try:
         res = requests.get(f"{BASE_URL}/account", headers=get_headers(key), timeout=8)
@@ -29,34 +28,58 @@ def check_account_balance(key):
     return None
 
 @st.cache_data(ttl=300)
-def fetch_os_templates(key):
-    """جلب جميع الـ OS Images المتاحة مباشرة من الـ API"""
+def fetch_catalog(key):
+    all_items = []
+    page = 1
+    while True:
+        try:
+            res = requests.get(f"{BASE_URL}/catalog?page={page}", headers=get_headers(key), timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                all_items.extend(data.get("data", []))
+                if not data.get("links", {}).get("next"):
+                    break
+                page += 1
+            else:
+                break
+        except Exception:
+            break
+    return all_items
+
+@st.cache_data(ttl=300)
+def fetch_os_templates_for_sku(key, sku_code):
+    """جلب قائمة نظم التشغيل المتاحة خصيصاً للـ SKU المختار بنفس قيم اللوحة الرسمية"""
+    templates = {}
     try:
-        res = requests.get(f"{BASE_URL}/templates", headers=get_headers(key), timeout=10)
+        # المحاولة الأولى: جلب الأنظمة المتاحة للـ SKU
+        res = requests.get(f"{BASE_URL}/catalog/{sku_code}/templates", headers=get_headers(key), timeout=8)
+        if res.status_code != 200:
+            res = requests.get(f"{BASE_URL}/templates?sku={sku_code}", headers=get_headers(key), timeout=8)
+        if res.status_code != 200:
+            res = requests.get(f"{BASE_URL}/templates", headers=get_headers(key), timeout=8)
+
         if res.status_code == 200:
             data = res.json().get("data", [])
-            templates = {}
             for item in data:
-                # أخذ الـ code أو slug كـ قيمة والـ name للعرض
-                code = item.get("code") or item.get("slug") or item.get("id")
-                name = item.get("name", code)
-                if code:
-                    templates[name] = code
-            if templates:
-                return templates
+                val = item.get("code") or item.get("slug") or item.get("name") or item.get("id")
+                label = item.get("name") or val
+                if val:
+                    templates[label] = val
     except Exception:
         pass
-    
-    # Fallback إذا لم يستجب الـ Endpoint الخاص بالـ templates
-    return {
-        "AlmaLinux 8": "almalinux-8",
-        "AlmaLinux 9": "almalinux-9",
-        "Ubuntu 22.04 LTS": "ubuntu-22.04",
-        "Ubuntu 20.04 LTS": "ubuntu-20.04",
-        "Debian 11": "debian-11",
-        "Debian 12": "debian-12",
-        "CentOS Stream 9": "centos-stream-9"
-    }
+
+    # إذا لم يستجب الـ API ببيانات، نستخدم الأسماء المطابقة للوحة CloudCenmax الرسمية
+    if not templates:
+        templates = {
+            "AlmaLinux 8.10 64bits": "almalinux-8.10-x86_64",
+            "AlmaLinux 9.4 64bits": "almalinux-9.4-x86_64",
+            "Ubuntu 22.04 LTS 64bits": "ubuntu-22.04-x86_64",
+            "Ubuntu 20.04 LTS 64bits": "ubuntu-20.04-x86_64",
+            "Debian 12 64bits": "debian-12-x86_64",
+            "Debian 11 64bits": "debian-11-x86_64",
+            "CentOS Stream 9 64bits": "centos-stream-9-x86_64"
+        }
+    return templates
 
 def fetch_user_resources(key):
     all_resources = []
@@ -97,31 +120,9 @@ if api_key:
 # ==========================================
 st.subheader("🚀 Bulk Deployment Configuration")
 
-@st.cache_data(ttl=120)
-def fetch_catalog(key):
-    all_items = []
-    page = 1
-    while True:
-        try:
-            res = requests.get(f"{BASE_URL}/catalog?page={page}", headers=get_headers(key), timeout=10)
-            if res.status_code == 200:
-                data = res.json()
-                all_items.extend(data.get("data", []))
-                if not data.get("links", {}).get("next"):
-                    break
-                page += 1
-            else:
-                break
-        except Exception:
-            break
-    return all_items
-
 catalog_items = []
-available_templates = {}
-
 if api_key:
     catalog_items = fetch_catalog(api_key)
-    available_templates = fetch_os_templates(api_key)
 
 structured_catalog = {}
 for item in catalog_items:
@@ -141,7 +142,7 @@ for item in catalog_items:
 num_servers = st.number_input("Number of Servers to Create", min_value=1, max_value=50, value=1, step=1)
 server_list = []
 
-if structured_catalog:
+if structured_catalog and api_key:
     for i in range(int(num_servers)):
         st.markdown(f"#### 🖥️ Server #{i+1}")
         col_host, col_reg, col_country, col_city, col_sku = st.columns([2, 1.5, 1.5, 1.5, 2.5])
@@ -160,15 +161,17 @@ if structured_catalog:
             selected_sku_label = st.selectbox("SKU Plan", list(sku_map.keys()), key=f"d_sku_{i}")
             selected_sku_code = sku_map[selected_sku_label]
 
+        # جلب الأنظمة المتاحة ديناميكياً للـ SKU المختار
+        sku_os_options = fetch_os_templates_for_sku(api_key, selected_sku_code)
+
         col_img, col_pass = st.columns([2, 2])
         with col_img:
-            # العرض الديناميكي للأنظمة المتاحة من الـ API
-            template_label = st.selectbox(
+            selected_os_label = st.selectbox(
                 "Operating System Image", 
-                list(available_templates.keys()), 
+                list(sku_os_options.keys()), 
                 key=f"d_os_{i}"
             )
-            selected_template_code = available_templates[template_label]
+            selected_os_val = sku_os_options[selected_os_label]
 
         with col_pass:
             srv_pass = st.text_input("Root Password", type="password", key=f"d_pass_{i}", value="DefaultPass123!")
@@ -176,7 +179,7 @@ if structured_catalog:
         server_list.append({
             "name": h_name.strip(), 
             "sku": selected_sku_code,
-            "template": selected_template_code,
+            "os_val": selected_os_val,
             "password": srv_pass
         })
 
@@ -192,7 +195,7 @@ if structured_catalog:
                     "name": srv["name"], 
                     "sku": srv["sku"], 
                     "options": {
-                        "template": srv["template"],
+                        "template": srv["os_val"],
                         "password": srv["password"]
                     }
                 }
@@ -259,7 +262,6 @@ if api_key:
             else:
                 st.session_state.selected_servers.discard(srv_id)
 
-        # Batch Action Buttons
         col_sel_count, col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
         
         selected_count = len(st.session_state.selected_servers)
@@ -296,12 +298,8 @@ if api_key:
 
         st.markdown("---")
 
-        # Table Header
         h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([0.5, 2, 1.5, 1.5, 2.5, 1.5, 2, 1.5])
-        
-        # Select All Checkbox
         h_col1.checkbox("", key="chk_select_all", on_change=toggle_select_all)
-
         h_col2.write("**Hostname**")
         h_col3.write("**Region**")
         h_col4.write("**IPv4**")
@@ -312,17 +310,11 @@ if api_key:
         
         st.divider()
 
-        # Table Rows
         for srv in servers:
             srv_id = srv.get("id")
             name = srv.get("name", "N/A")
-            
             specs = srv.get("specs", {})
-            if isinstance(specs, dict):
-                region = specs.get("region", srv.get("region", "N/A"))
-            else:
-                region = srv.get("region", "N/A")
-
+            region = specs.get("region", srv.get("region", "N/A")) if isinstance(specs, dict) else srv.get("region", "N/A")
             ip = srv.get("ip") or srv.get("main_ip") or "N/A"
 
             sku_raw = srv.get("sku") or srv.get("plan")
@@ -371,6 +363,5 @@ if api_key:
                 if st.button("🗑️", key=f"btn_del_{srv_id}", help="Delete Server"):
                     action_resource(api_key, srv_id, "delete")
                     st.rerun()
-
 else:
     st.warning("Please enter your API Key in the sidebar.")
