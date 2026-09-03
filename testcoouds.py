@@ -48,7 +48,6 @@ def fetch_catalog(key):
 
 @st.cache_data(ttl=300)
 def fetch_os_templates_smart(key, sku_code):
-    """جلب قائمة نظم التشغيل واستخراج الـ ID / Slug الصحيح لكل خيار"""
     templates = {}
     endpoints = [
         f"{BASE_URL}/catalog/{sku_code}/templates",
@@ -64,8 +63,7 @@ def fetch_os_templates_smart(key, sku_code):
                 items = data.get("data", []) if isinstance(data, dict) else data
                 if items and isinstance(items, list):
                     for item in items:
-                        # الترتيب حسب الأهمية: ID العددي أو الـ Slug أولاً
-                        val = item.get("id") or item.get("slug") or item.get("code") or item.get("name")
+                        val = item.get("slug") or item.get("id") or item.get("code") or item.get("name")
                         label = item.get("name") or str(val)
                         if val:
                             templates[label] = str(val)
@@ -74,16 +72,16 @@ def fetch_os_templates_smart(key, sku_code):
         except Exception:
             continue
 
-    # Fallback بنفس أسمات وقيم اللوحة الرسمية
     if not templates:
         templates = {
-            "AlmaLinux 8.10 64bits": "almalinux-8",
-            "AlmaLinux 9.4 64bits": "almalinux-9",
-            "Ubuntu 22.04 LTS 64bits": "ubuntu-22.04",
-            "Ubuntu 20.04 LTS 64bits": "ubuntu-20.04",
-            "Debian 12 64bits": "debian-12",
-            "Debian 11 64bits": "debian-11",
-            "CentOS Stream 9 64bits": "centos-stream-9"
+            "AlmaLinux 8": "almalinux-8",
+            "AlmaLinux 9": "almalinux-9",
+            "Ubuntu 24.04": "ubuntu-24",
+            "Ubuntu 22.04": "ubuntu-22.04",
+            "Ubuntu 20.04": "ubuntu-20.04",
+            "Debian 12": "debian-12",
+            "Debian 11": "debian-11",
+            "CentOS Stream 9": "centos-stream-9"
         }
     return templates
 
@@ -151,7 +149,7 @@ server_list = []
 if structured_catalog and api_key:
     for i in range(int(num_servers)):
         st.markdown(f"#### 🖥️ Server #{i+1}")
-        col_host, col_reg, col_country, col_city, col_sku = st.columns([2, 1.5, 1.5, 1.5, 2.5])
+        col_host, col_reg, col_country, col_city, col_sku, col_img = st.columns([2, 1.5, 1.5, 1.5, 2.5, 2])
         
         with col_host:
             h_name = st.text_input("Server Name", value=f"server-{i+1}", key=f"d_name_{i}")
@@ -169,7 +167,6 @@ if structured_catalog and api_key:
 
         sku_os_options = fetch_os_templates_smart(api_key, selected_sku_code)
 
-        col_img, col_pass = st.columns([2, 2])
         with col_img:
             selected_os_label = st.selectbox(
                 "Operating System Image", 
@@ -178,14 +175,10 @@ if structured_catalog and api_key:
             )
             selected_os_val = sku_os_options[selected_os_label]
 
-        with col_pass:
-            srv_pass = st.text_input("Root Password", type="password", key=f"d_pass_{i}", value="DefaultPass123!")
-
         server_list.append({
             "name": h_name.strip(), 
             "sku": selected_sku_code,
-            "os_val": selected_os_val,
-            "password": srv_pass
+            "template": selected_os_val
         })
 
     if st.button("🔥 Deploy All Resources Now", type="primary"):
@@ -196,50 +189,22 @@ if structured_catalog and api_key:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                # تجربة الصياغات المحتملة المقبولة لدى السيرفر لضمان تجنب HTTP 500
-                payloads_to_try = [
-                    {
-                        "name": srv["name"], 
-                        "sku": srv["sku"], 
-                        "options": {
-                            "template": srv["os_val"],
-                            "password": srv["password"]
-                        }
-                    },
-                    {
-                        "name": srv["name"], 
-                        "sku": srv["sku"], 
-                        "options": {
-                            "image": srv["os_val"],
-                            "password": srv["password"]
-                        }
-                    },
-                    {
-                        "name": srv["name"], 
-                        "sku": srv["sku"], 
-                        "template": srv["os_val"],
-                        "password": srv["password"]
-                    }
-                ]
+                # الهيكل الرسمي المباشر الخاص بالـ API حسب CLI الرسمية
+                payload = {
+                    "name": srv["name"], 
+                    "sku": srv["sku"], 
+                    "template": srv["template"]
+                }
 
-                success = False
-                last_error = ""
-
-                for payload in payloads_to_try:
-                    try:
-                        res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=15)
-                        if res.status_code in [200, 201]:
-                            res_data = res.json().get("data", {})
-                            status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
-                            success = True
-                            break
-                        else:
-                            last_error = f"HTTP {res.status_code} | {res.text}"
-                    except Exception as e:
-                        last_error = str(e)
-
-                if not success:
-                    status_box.error(f"❌ Failed **{srv['name']}**: {last_error}")
+                try:
+                    res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=20)
+                    if res.status_code in [200, 201]:
+                        res_data = res.json().get("data", {})
+                        status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
+                    else:
+                        status_box.error(f"❌ Failed **{srv['name']}** (HTTP {res.status_code}): {res.text}")
+                except Exception as e:
+                    status_box.error(f"❌ Failed **{srv['name']}**: {str(e)}")
 
                 progress.progress((idx + 1) / len(server_list))
 
