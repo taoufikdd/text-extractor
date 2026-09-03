@@ -2,9 +2,9 @@ import streamlit as st
 import requests
 import json
 
-st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CloudCenmax Debugger & Deployer", layout="wide", page_icon="⚡")
 
-st.title("⚡ CloudCenmax API Resource Deployer")
+st.title("⚡ CloudCenmax API Deployer & Diagnostic Tool")
 
 BASE_URL = "https://cloudcenmax.com/api/v1"
 
@@ -53,101 +53,66 @@ for item in catalog_items:
             "name": item.get("name", sku_code)
         })
 
-# --- Deployment Form ---
-st.subheader("🚀 Bulk Deployment Configuration")
-num_servers = st.number_input("Number of Servers to Create", min_value=1, max_value=50, value=1, step=1)
+# --- Configuration Section ---
+st.subheader("🛠️ Deployment & Header Diagnostic")
 
-server_list = []
+col1, col2 = st.columns(2)
+with col1:
+    server_name = st.text_input("Server Name", value="server-test")
+    
+with col2:
+    header_auth_type = st.selectbox(
+        "Select Auth Header Format", 
+        ["Bearer Token (Standard)", "X-API-Key Header", "Plain Token (No Bearer)"]
+    )
 
 if structured_catalog:
-    for i in range(int(num_servers)):
-        st.markdown(f"#### 🖥️ Server #{i+1}")
-        col_host, col_reg, col_country, col_city, col_sku = st.columns([2, 2, 2, 2, 3])
+    col_reg, col_country, col_city, col_sku = st.columns([2, 2, 2, 3])
+    with col_reg:
+        selected_reg = st.selectbox("Region", sorted(list(structured_catalog.keys())))
+    with col_country:
+        selected_country = st.selectbox("Country", sorted(list(structured_catalog[selected_reg].keys())))
+    with col_city:
+        selected_city = st.selectbox("City", sorted(list(structured_catalog[selected_reg][selected_country].keys())))
+    with col_sku:
+        available_skus = structured_catalog[selected_reg][selected_country][selected_city]
+        sku_map = {f"{item['name']} [{item['code']}]": item['code'] for item in available_skus}
+        selected_sku_label = st.selectbox("SKU Plan", list(sku_map.keys()))
+        selected_sku_code = sku_map[selected_sku_label]
+
+    st.divider()
+
+    if st.button("🚀 Execute Deployment Request", type="primary"):
+        clean_key = api_key.strip()
         
-        with col_host:
-            h_name = st.text_input("Server Name", value=f"server-{i+1}", key=f"name_{i}")
-        with col_reg:
-            selected_reg = st.selectbox("Region", sorted(list(structured_catalog.keys())), key=f"reg_{i}")
-        with col_country:
-            selected_country = st.selectbox("Country", sorted(list(structured_catalog[selected_reg].keys())), key=f"country_{i}")
-        with col_city:
-            selected_city = st.selectbox("City", sorted(list(structured_catalog[selected_reg][selected_country].keys())), key=f"city_{i}")
-        with col_sku:
-            available_skus = structured_catalog[selected_reg][selected_country][selected_city]
-            sku_map = {f"{item['name']} [{item['code']}]": item['code'] for item in available_skus}
-            selected_sku_label = st.selectbox("SKU Plan", list(sku_map.keys()), key=f"sku_{i}")
-            selected_sku_code = sku_map[selected_sku_label]
+        # تجهيز الهيدرز حسب الاختيار
+        if header_auth_type == "Bearer Token (Standard)":
+            headers = {"Authorization": f"Bearer {clean_key}", "Accept": "application/json", "Content-Type": "application/json"}
+        elif header_auth_type == "X-API-Key Header":
+            headers = {"X-API-Key": clean_key, "Accept": "application/json", "Content-Type": "application/json"}
+        else:
+            headers = {"Authorization": clean_key, "Accept": "application/json", "Content-Type": "application/json"}
 
-        # خيارات إضافية تجريبية للـ Options
-        st.caption("🔧 Optional Options Payload Customization:")
-        include_os = st.checkbox("Include Default OS Image (AlmaLinux 8) in Options", value=True, key=f"os_chk_{i}")
-
-        options_payload = {}
-        if include_os:
-            options_payload = {
-                "image": "almalinux-8",
-                "os": "almalinux-8"
-            }
-
-        server_list.append({
-            "name": h_name.strip(),
+        # تجربة Payload الخفيف المعياري
+        payload = {
+            "name": server_name.strip(),
             "sku": selected_sku_code,
-            "options": options_payload
-        })
-        st.divider()
-
-# --- Execution ---
-if st.button("🔥 Deploy All Resources Now", type="primary"):
-    if not api_key:
-        st.error("❌ أدخل الـ API Key أولاً!")
-    else:
-        headers = {
-            "Authorization": f"Bearer {api_key.strip()}",
-            "Accept": "application/json",
-            "Content-Type": "application/json"
+            "options": {}
         }
-        
-        progress = st.progress(0)
-        status_box = st.container()
-        logs_and_errors = []
 
-        for idx, srv in enumerate(server_list):
-            payload = {
-                "name": srv["name"],
-                "sku": srv["sku"],
-                "options": srv["options"]
-            }
+        st.info("Sending Request...")
+        try:
+            res = requests.post(f"{BASE_URL}/resources", json=payload, headers=headers, timeout=15)
+            
+            st.write(f"**HTTP Response Code:** `{res.status_code}`")
+            
+            if res.status_code in [200, 201]:
+                st.success("✅ Order Provisioned Successfully!")
+                st.json(res.json())
+            else:
+                st.error(f"❌ Returned Error Code {res.status_code}")
+                st.write("**Full Response Raw Output:**")
+                st.code(res.text, language="json" if "{" in res.text else "text")
 
-            try:
-                res = requests.post(f"{BASE_URL}/resources", json=payload, headers=headers, timeout=15)
-
-                if res.status_code in [200, 201]:
-                    res_data = res.json().get("data", {})
-                    server_id = res_data.get("id", "N/A")
-                    status_box.success(f"✅ Created **{srv['name']}** (ID: `{server_id}`) | SKU: `{srv['sku']}`")
-                elif res.status_code in [401, 403]:
-                    status_box.error(f"🚫 Permission Error ({res.status_code}): الـ API Key قد يكون Read-Only أو يفتقر لصلاحية الكتابة (Write Permission).")
-                    logs_and_errors.append({"name": srv["name"], "status_code": res.status_code, "response": res.text})
-                else:
-                    status_box.error(f"❌ Failed **{srv['name']}**: HTTP Status {res.status_code}")
-                    logs_and_errors.append({
-                        "name": srv["name"],
-                        "status_code": res.status_code,
-                        "payload_sent": payload,
-                        "response": res.text
-                    })
-            except Exception as e:
-                status_box.error(f"❌ Error on **{srv['name']}**: {str(e)}")
-                logs_and_errors.append({"name": srv["name"], "status_code": "EXC", "response": str(e)})
-
-            progress.progress((idx + 1) / len(server_list))
-
-        if logs_and_errors:
-            st.markdown("---")
-            st.subheader("🚨 Error Details")
-            for err in logs_and_errors:
-                with st.expander(f"Details: {err['name']} (Status: {err['status_code']})"):
-                    st.write("**Payload Sent:**")
-                    st.json(err.get("payload_sent", {}))
-                    st.write("**Response:**")
-                    st.code(err["response"], language="json")
+        except Exception as e:
+            st.error(f"Exception Error: {str(e)}")
