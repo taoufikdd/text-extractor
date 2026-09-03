@@ -2,43 +2,44 @@ import streamlit as st
 import requests
 import json
 
-st.set_page_config(page_title="CloudCenmax API Deployer", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
 
-st.title("⚡ CloudCenmax API Bulk Server Deployment")
-st.markdown("إنشاء السيرفرات دفعة واحدة باستخدام الـ API Key الرسمي.")
+st.title("⚡ CloudCenmax Bulk Server Deployment")
+st.markdown("إنشاء السيرفرات دفعة واحدة باستخدام الـ API Key الرسمي (`https://cloudcenmax.com/api/v1`).")
 
-# --- Sidebar: API Key & Base URL ---
+# --- Sidebar: API Key ---
 st.sidebar.header("🔑 API Authentication")
-api_key = st.sidebar.text_input("CloudCenmax API Key", type="password", help="ضع الـ API Key هنا (مثال: ck_...)")
-base_url = st.sidebar.text_input("API Base URL", value="https://cloudcenmax.com/api", help="رابط الـ API الأساسي")
+api_key = st.sidebar.text_input("CloudCenmax API Key", type="password", help="ضع المفتاح مثل ck_Kd99...")
+base_url = "https://cloudcenmax.com/api/v1"
 root_password = st.sidebar.text_input("Root Password", value="qRdkWWKIhbb9q6Nmwi3mfrt", type="password")
 
-# --- Test API Connection Button ---
+# --- Test API Connection ---
 if st.sidebar.button("🔌 Test API Connection"):
     if not api_key:
         st.sidebar.error("❌ أُدخل الـ API Key أولاً!")
     else:
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {api_key.strip()}",
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
-        # نجرب نقطة نهاية عامة (مثل servers أو user)
-        test_endpoints = ["/servers", "/v1/servers", "/user", "/account"]
-        success = False
         
-        for ep in test_endpoints:
-            try:
-                res = requests.get(f"{base_url.rstrip('/')}{ep}", headers=headers, timeout=5)
-                if res.status_code in [200, 401, 403, 422]:
-                    st.sidebar.success(f"✅ API Reachable! Endpoint found: `{ep}` (Status: {res.status_code})")
-                    success = True
-                    break
-            except Exception:
-                continue
-                
-        if not success:
-            st.sidebar.error("❌ لم يتم العثور على المسار الصحيح. تحقق من الـ API Docs في الموقع.")
+        # تجربة الاتصال بحسابك أو بطلب القائمة
+        try:
+            res = requests.get(f"{base_url}/account", headers=headers, timeout=8)
+            if res.status_code == 200:
+                st.sidebar.success(f"✅ Connected Successfully! (Status 200)")
+            elif res.status_code in [401, 403]:
+                st.sidebar.error(f"❌ API Key غير صحيح أو صلاحيته منتهية (Status {res.status_code})")
+            else:
+                # تجربة مسار آخر مثل /servers
+                res_servers = requests.get(f"{base_url}/servers", headers=headers, timeout=8)
+                if res_servers.status_code == 200:
+                    st.sidebar.success("✅ Connected Successfully! (Status 200)")
+                else:
+                    st.sidebar.warning(f"⚠️ Response Status: {res_servers.status_code}")
+        except Exception as e:
+            st.sidebar.error(f"❌ Connection Error: {str(e)}")
 
 # --- Locations Data ---
 LOCATIONS_DATA = {
@@ -113,7 +114,7 @@ if st.button("🔥 Deploy All Servers Now", type="primary"):
         st.error("❌ أُدخل الـ API Key أولاً في الـ Sidebar!")
     else:
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {api_key.strip()}",
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
@@ -122,22 +123,15 @@ if st.button("🔥 Deploy All Servers Now", type="primary"):
         status_box = st.container()
         logs_and_errors = []
 
-        # محاولة إرسال الطلب لـ /servers (يمكنك تعديلها بناء على الـ Docs)
-        target_url = f"{base_url.rstrip('/')}/servers"
+        target_url = f"{base_url}/servers"
 
         for idx, srv in enumerate(server_list):
             payload = {
                 "hostname": srv["hostname"],
-                "name": srv["hostname"],
                 "region": srv["location"],
-                "location": srv["location"],
                 "os": "almalinux-8.10",
                 "plan": "4vcpu-8gb-80gb",
-                "vcpus": 4,
-                "ram": 8192,
-                "disk": 80,
-                "password": root_password,
-                "root_password": root_password
+                "password": root_password
             }
 
             try:
@@ -167,8 +161,7 @@ if st.button("🔥 Deploy All Servers Now", type="primary"):
 
         if logs_and_errors:
             st.markdown("---")
-            st.subheader("🚨 Detailed Error Logs & Diagnostics")
-            st.info("💡 ملاحظة: إذا ظهر خطأ 404، يرجى النقر على رابط **'Read the API docs'** في أعلى يمين موقع CloudCenmax لمعرفة المسار الصحيح (Endpoint) لإنشاء السيرفرات وإخباري به.")
+            st.subheader("🚨 Detailed Error Logs")
             for err in logs_and_errors:
                 with st.expander(f"❌ Error Log: {err['hostname']} (Status: {err['status_code']})"):
                     st.write("**URL:**", err["url_called"])
