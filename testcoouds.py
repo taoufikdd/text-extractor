@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 
-st.set_page_config(page_title="CloudCenmax Bulk Deployer & Manager", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CloudCenmax Manager", layout="wide", page_icon="⚡")
 
 st.title("⚡ CloudCenmax Bulk Deployer & Manager")
 
@@ -63,7 +63,7 @@ if api_key:
         st.sidebar.metric("Current Balance", f"${user_balance:.2f}")
 
 # ==========================================
-# SECTION 1: BULK DEPLOYMENT
+# SECTION 1: BULK DEPLOYMENT CONFIGURATION
 # ==========================================
 st.subheader("🚀 Bulk Deployment Configuration")
 
@@ -111,7 +111,7 @@ server_list = []
 if structured_catalog:
     for i in range(int(num_servers)):
         st.markdown(f"#### 🖥️ Server #{i+1}")
-        col_host, col_reg, col_country, col_city, col_sku = st.columns([2, 2, 2, 2, 3])
+        col_host, col_reg, col_country, col_city, col_sku = st.columns([2, 1.5, 1.5, 1.5, 2.5])
         
         with col_host:
             h_name = st.text_input("Server Name", value=f"server-{i+1}", key=f"d_name_{i}")
@@ -127,7 +127,22 @@ if structured_catalog:
             selected_sku_label = st.selectbox("SKU Plan", list(sku_map.keys()), key=f"d_sku_{i}")
             selected_sku_code = sku_map[selected_sku_label]
 
-        server_list.append({"name": h_name.strip(), "sku": selected_sku_code})
+        col_img, col_pass = st.columns([2, 2])
+        with col_img:
+            selected_os = st.selectbox(
+                "Operating System Image", 
+                ["ubuntu-22.04", "ubuntu-20.04", "debian-11", "debian-12", "centos-7"], 
+                key=f"d_os_{i}"
+            )
+        with col_pass:
+            srv_pass = st.text_input("Root Password", type="password", key=f"d_pass_{i}", value="DefaultPass123!")
+
+        server_list.append({
+            "name": h_name.strip(), 
+            "sku": selected_sku_code,
+            "image": selected_os,
+            "password": srv_pass
+        })
 
     if st.button("🔥 Deploy All Resources Now", type="primary"):
         if not api_key:
@@ -137,12 +152,21 @@ if structured_catalog:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                payload = {"name": srv["name"], "sku": srv["sku"], "options": {}}
+                # التعديل الأساسي: استخدام 'template' الإجباري للـ OS
+                payload = {
+                    "name": srv["name"], 
+                    "sku": srv["sku"], 
+                    "options": {
+                        "template": srv["image"],
+                        "password": srv["password"]
+                    }
+                }
+
                 try:
                     res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=15)
                     if res.status_code in [200, 201]:
                         res_data = res.json().get("data", {})
-                        status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`)")
+                        status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
                     else:
                         status_box.error(f"❌ Failed **{srv['name']}**: HTTP {res.status_code} | {res.text}")
                 except Exception as e:
@@ -180,7 +204,6 @@ if api_key:
     if not servers:
         st.info("No active servers loaded.")
     else:
-        # Callback function لتحديث اختيار الكل
         def toggle_select_all():
             if st.session_state.chk_select_all:
                 for s in servers:
@@ -195,14 +218,13 @@ if api_key:
                         st.session_state.selected_servers.discard(srv_id)
                         st.session_state[f"chk_{srv_id}"] = False
 
-        # Callback function لتحديث زر الفردي
         def toggle_individual(srv_id):
             if st.session_state[f"chk_{srv_id}"]:
                 st.session_state.selected_servers.add(srv_id)
             else:
                 st.session_state.selected_servers.discard(srv_id)
 
-        # Batch Action Bar
+        # Batch Action Buttons
         col_sel_count, col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
         
         selected_count = len(st.session_state.selected_servers)
@@ -281,7 +303,6 @@ if api_key:
 
             c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.5, 2, 1.5, 1.5, 2.5, 1.5, 2, 1.5])
 
-            # Row Checkbox with Callback
             c1.checkbox(
                 "", 
                 key=f"chk_{srv_id}", 
