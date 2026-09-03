@@ -74,11 +74,10 @@ def fetch_os_templates_smart(key, sku_code):
 
     if not templates:
         templates = {
+            "Ubuntu 22.04 LTS": "ubuntu-22.04",
+            "Ubuntu 20.04 LTS": "ubuntu-20.04",
             "AlmaLinux 8": "almalinux-8",
             "AlmaLinux 9": "almalinux-9",
-            "Ubuntu 24.04": "ubuntu-24",
-            "Ubuntu 22.04": "ubuntu-22.04",
-            "Ubuntu 20.04": "ubuntu-20.04",
             "Debian 12": "debian-12",
             "Debian 11": "debian-11",
             "CentOS Stream 9": "centos-stream-9"
@@ -189,22 +188,43 @@ if structured_catalog and api_key:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                # الهيكل الرسمي المباشر الخاص بالـ API حسب CLI الرسمية
-                payload = {
-                    "name": srv["name"], 
-                    "sku": srv["sku"], 
-                    "template": srv["template"]
-                }
+                # تجربة تركيبتين أساستين فـ الـ API
+                payloads = [
+                    {
+                        "name": srv["name"], 
+                        "sku": srv["sku"], 
+                        "template": srv["template"]
+                    },
+                    {
+                        "name": srv["name"], 
+                        "sku": srv["sku"], 
+                        "image": srv["template"]
+                    }
+                ]
 
-                try:
-                    res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=20)
-                    if res.status_code in [200, 201]:
-                        res_data = res.json().get("data", {})
-                        status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
-                    else:
-                        status_box.error(f"❌ Failed **{srv['name']}** (HTTP {res.status_code}): {res.text}")
-                except Exception as e:
-                    status_box.error(f"❌ Failed **{srv['name']}**: {str(e)}")
+                success = False
+                last_error = ""
+
+                for p in payloads:
+                    try:
+                        res = requests.post(f"{BASE_URL}/resources", json=p, headers=get_headers(api_key), timeout=20)
+                        if res.status_code in [200, 201]:
+                            res_data = res.json().get("data", {})
+                            status_box.success(f"✅ Deployment Request Sent for **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`)")
+                            
+                            # طباعة الـ Details للتأكد
+                            with status_box.expander(f"Response Payload ({srv['name']})"):
+                                st.json(res.json())
+                                
+                            success = True
+                            break
+                        else:
+                            last_error = f"HTTP {res.status_code} | Raw Response: {res.text}"
+                    except Exception as e:
+                        last_error = str(e)
+
+                if not success:
+                    status_box.error(f"❌ Failed **{srv['name']}**: {last_error}")
 
                 progress.progress((idx + 1) / len(server_list))
 
