@@ -152,13 +152,18 @@ if structured_catalog:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                # التعديل الأساسي: استخدام 'template' الإجباري للـ OS
+                # Payload شاطر كيحط الـ parameters فجميع الأماكن المتوقعة للـ API
                 payload = {
                     "name": srv["name"], 
                     "sku": srv["sku"], 
+                    "template": srv["image"],
+                    "image": srv["image"],
                     "options": {
                         "template": srv["image"],
-                        "password": srv["password"]
+                        "image": srv["image"],
+                        "os": srv["image"],
+                        "password": srv["password"],
+                        "root_password": srv["password"]
                     }
                 }
 
