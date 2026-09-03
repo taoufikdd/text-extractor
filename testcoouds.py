@@ -47,37 +47,43 @@ def fetch_catalog(key):
     return all_items
 
 @st.cache_data(ttl=300)
-def fetch_os_templates_for_sku(key, sku_code):
-    """جلب قائمة نظم التشغيل المتاحة خصيصاً للـ SKU المختار بنفس قيم اللوحة الرسمية"""
+def fetch_os_templates_smart(key, sku_code):
+    """جلب قائمة نظم التشغيل واستخراج الـ ID / Slug الصحيح لكل خيار"""
     templates = {}
-    try:
-        # المحاولة الأولى: جلب الأنظمة المتاحة للـ SKU
-        res = requests.get(f"{BASE_URL}/catalog/{sku_code}/templates", headers=get_headers(key), timeout=8)
-        if res.status_code != 200:
-            res = requests.get(f"{BASE_URL}/templates?sku={sku_code}", headers=get_headers(key), timeout=8)
-        if res.status_code != 200:
-            res = requests.get(f"{BASE_URL}/templates", headers=get_headers(key), timeout=8)
+    endpoints = [
+        f"{BASE_URL}/catalog/{sku_code}/templates",
+        f"{BASE_URL}/templates?sku={sku_code}",
+        f"{BASE_URL}/templates"
+    ]
+    
+    for ep in endpoints:
+        try:
+            res = requests.get(ep, headers=get_headers(key), timeout=8)
+            if res.status_code == 200:
+                data = res.json()
+                items = data.get("data", []) if isinstance(data, dict) else data
+                if items and isinstance(items, list):
+                    for item in items:
+                        # الترتيب حسب الأهمية: ID العددي أو الـ Slug أولاً
+                        val = item.get("id") or item.get("slug") or item.get("code") or item.get("name")
+                        label = item.get("name") or str(val)
+                        if val:
+                            templates[label] = str(val)
+                    if templates:
+                        break
+        except Exception:
+            continue
 
-        if res.status_code == 200:
-            data = res.json().get("data", [])
-            for item in data:
-                val = item.get("code") or item.get("slug") or item.get("name") or item.get("id")
-                label = item.get("name") or val
-                if val:
-                    templates[label] = val
-    except Exception:
-        pass
-
-    # إذا لم يستجب الـ API ببيانات، نستخدم الأسماء المطابقة للوحة CloudCenmax الرسمية
+    # Fallback بنفس أسمات وقيم اللوحة الرسمية
     if not templates:
         templates = {
-            "AlmaLinux 8.10 64bits": "almalinux-8.10-x86_64",
-            "AlmaLinux 9.4 64bits": "almalinux-9.4-x86_64",
-            "Ubuntu 22.04 LTS 64bits": "ubuntu-22.04-x86_64",
-            "Ubuntu 20.04 LTS 64bits": "ubuntu-20.04-x86_64",
-            "Debian 12 64bits": "debian-12-x86_64",
-            "Debian 11 64bits": "debian-11-x86_64",
-            "CentOS Stream 9 64bits": "centos-stream-9-x86_64"
+            "AlmaLinux 8.10 64bits": "almalinux-8",
+            "AlmaLinux 9.4 64bits": "almalinux-9",
+            "Ubuntu 22.04 LTS 64bits": "ubuntu-22.04",
+            "Ubuntu 20.04 LTS 64bits": "ubuntu-20.04",
+            "Debian 12 64bits": "debian-12",
+            "Debian 11 64bits": "debian-11",
+            "CentOS Stream 9 64bits": "centos-stream-9"
         }
     return templates
 
@@ -161,8 +167,7 @@ if structured_catalog and api_key:
             selected_sku_label = st.selectbox("SKU Plan", list(sku_map.keys()), key=f"d_sku_{i}")
             selected_sku_code = sku_map[selected_sku_label]
 
-        # جلب الأنظمة المتاحة ديناميكياً للـ SKU المختار
-        sku_os_options = fetch_os_templates_for_sku(api_key, selected_sku_code)
+        sku_os_options = fetch_os_templates_smart(api_key, selected_sku_code)
 
         col_img, col_pass = st.columns([2, 2])
         with col_img:
@@ -191,24 +196,50 @@ if structured_catalog and api_key:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                payload = {
-                    "name": srv["name"], 
-                    "sku": srv["sku"], 
-                    "options": {
+                # تجربة الصياغات المحتملة المقبولة لدى السيرفر لضمان تجنب HTTP 500
+                payloads_to_try = [
+                    {
+                        "name": srv["name"], 
+                        "sku": srv["sku"], 
+                        "options": {
+                            "template": srv["os_val"],
+                            "password": srv["password"]
+                        }
+                    },
+                    {
+                        "name": srv["name"], 
+                        "sku": srv["sku"], 
+                        "options": {
+                            "image": srv["os_val"],
+                            "password": srv["password"]
+                        }
+                    },
+                    {
+                        "name": srv["name"], 
+                        "sku": srv["sku"], 
                         "template": srv["os_val"],
                         "password": srv["password"]
                     }
-                }
+                ]
 
-                try:
-                    res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=15)
-                    if res.status_code in [200, 201]:
-                        res_data = res.json().get("data", {})
-                        status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
-                    else:
-                        status_box.error(f"❌ Failed **{srv['name']}**: HTTP {res.status_code} | {res.text}")
-                except Exception as e:
-                    status_box.error(f"❌ Exception on **{srv['name']}**: {str(e)}")
+                success = False
+                last_error = ""
+
+                for payload in payloads_to_try:
+                    try:
+                        res = requests.post(f"{BASE_URL}/resources", json=payload, headers=get_headers(api_key), timeout=15)
+                        if res.status_code in [200, 201]:
+                            res_data = res.json().get("data", {})
+                            status_box.success(f"✅ Created **{srv['name']}** (ID: `{res_data.get('id', 'N/A')}`) - Provisioning...")
+                            success = True
+                            break
+                        else:
+                            last_error = f"HTTP {res.status_code} | {res.text}"
+                    except Exception as e:
+                        last_error = str(e)
+
+                if not success:
+                    status_box.error(f"❌ Failed **{srv['name']}**: {last_error}")
 
                 progress.progress((idx + 1) / len(server_list))
 
