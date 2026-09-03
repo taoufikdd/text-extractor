@@ -5,13 +5,37 @@ import json
 st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
 
 st.title("⚡ CloudCenmax API Bulk Resource Deployer")
-st.markdown("جلب قائمة الـ Catalog حياً عبر الـ API وإنشاء السيرفرات بالـ SKU المناسب.")
+st.markdown("إنشاء السيرفرات بالـ SKU المناسب مع معالجة خطأ 500 والتحقق من الرصيد.")
 
 BASE_URL = "https://cloudcenmax.com/api/v1"
 
 # --- Sidebar Authentication ---
 st.sidebar.header("🔑 Authentication")
 api_key = st.sidebar.text_input("CloudCenmax API Key", type="password", help="ضع مفتاح ck_your_api_key هنا")
+root_password = st.sidebar.text_input("Root Password", value="qRdkWWKIhbb9q6Nmwi3mfrt", type="password")
+
+# --- Check Account Balance ---
+def check_account_balance(key):
+    headers = {
+        "Authorization": f"Bearer {key.strip()}",
+        "Accept": "application/json"
+    }
+    try:
+        res = requests.get(f"{BASE_URL}/account", headers=headers, timeout=8)
+        if res.status_code == 200:
+            data = res.json().get("data", {})
+            balance = data.get("balance", {}).get("amount", 0)
+            return balance
+    except Exception:
+        pass
+    return None
+
+if api_key:
+    user_balance = check_account_balance(api_key)
+    if user_balance is not None:
+        st.sidebar.metric("Current Balance", f"${user_balance:.2f}")
+        if user_balance <= 0:
+            st.sidebar.warning("⚠️ رصيدك 0$! السيرفر قد يرجع خطأ 500 أو 402 إذا لم يكن هناك رصيد كافي.")
 
 # --- Fetch Catalog Data Dynamic ---
 @st.cache_data(ttl=120)
@@ -23,7 +47,6 @@ def fetch_catalog(key):
     all_items = []
     page = 1
     
-    # جلب كافة الصفحات من Catalog
     while True:
         try:
             res = requests.get(f"{BASE_URL}/catalog?page={page}", headers=headers, timeout=10)
@@ -31,8 +54,6 @@ def fetch_catalog(key):
                 data = res.json()
                 items = data.get("data", [])
                 all_items.extend(items)
-                
-                # التحقق من وجود صفحات إضافية
                 if data.get("links", {}).get("next") is None:
                     break
                 page += 1
@@ -45,18 +66,14 @@ def fetch_catalog(key):
 
 catalog_items = []
 if api_key:
-    with st.spinner("جاري جلب القائمة والـ SKUs من CloudCenmax Catalog..."):
+    with st.spinner("جاري جلب الـ Catalog..."):
         catalog_items = fetch_catalog(api_key)
 
 if catalog_items:
-    st.sidebar.success(f"✅ تم جلب {len(catalog_items)} خيار من الـ Catalog!")
-elif api_key:
-    st.sidebar.error("❌ تعذر جلب البيانات من /catalog. أعد التأكد من صلاحية المفتاح.")
+    st.sidebar.success(f"✅ تم جلب {len(catalog_items)} خيار!")
 
-# --- Parse Regions, Countries, Cities & SKUs ---
-# البنية: regions[region_name][country_name][city_name] = [list of sku items]
+# --- Parse Catalog Structure ---
 structured_catalog = {}
-
 for item in catalog_items:
     specs = item.get("specs", {})
     region = specs.get("region", "Other")
@@ -72,14 +89,14 @@ for item in catalog_items:
         
     structured_catalog[region][country][city].append(item)
 
-# --- Server Form Configuration ---
+# --- Deployment Form ---
 st.subheader("🚀 Bulk Deployment Configuration")
 num_servers = st.number_input("Number of Servers to Create", min_value=1, max_value=50, value=1, step=1)
 
 server_list = []
 
 if not structured_catalog:
-    st.info("💡 يرجى إدخال API Key صحيح في الجانب الأيسر لعرض الخيارات المتاحة.")
+    st.info("💡 أدخل الـ API Key أولاً لعرض الخيارات.")
 else:
     for i in range(int(num_servers)):
         st.markdown(f"#### 🖥️ Server #{i+1}")
@@ -109,10 +126,7 @@ else:
 
         server_list.append({
             "name": h_name,
-            "sku": selected_sku_code,
-            "region": selected_reg,
-            "country": selected_country,
-            "city": selected_city
+            "sku": selected_sku_code
         })
         st.divider()
 
@@ -120,8 +134,6 @@ else:
 if st.button("🔥 Deploy All Resources Now", type="primary"):
     if not api_key:
         st.error("❌ أدخل الـ API Key أولاً!")
-    elif not server_list:
-        st.error("❌ لا توجد خيارات محددة للإنشاء.")
     else:
         headers = {
             "Authorization": f"Bearer {api_key.strip()}",
@@ -134,45 +146,55 @@ if st.button("🔥 Deploy All Resources Now", type="primary"):
         logs_and_errors = []
 
         for idx, srv in enumerate(server_list):
-            payload = {
+            # تجربة إرسال الـ Payload مع options وبدونها إذا رجع 500
+            payload_with_options = {
                 "name": srv["name"],
                 "sku": srv["sku"],
-                "options": {}
+                "options": {
+                    "image": "almalinux-8.10",
+                    "os": "almalinux-8.10",
+                    "password": root_password
+                }
+            }
+            
+            payload_minimal = {
+                "name": srv["name"],
+                "sku": srv["sku"]
             }
 
             try:
-                res = requests.post(f"{BASE_URL}/resources", json=payload, headers=headers, timeout=15)
+                # المحاولة الأولى بـ Options
+                res = requests.post(f"{BASE_URL}/resources", json=payload_with_options, headers=headers, timeout=15)
+                
+                # إذا رجع 500، نجرب Payload بدون Options
+                if res.status_code == 500:
+                    res = requests.post(f"{BASE_URL}/resources", json=payload_minimal, headers=headers, timeout=15)
+
                 if res.status_code in [200, 201]:
                     res_data = res.json().get("data", {})
                     server_id = res_data.get("id", "N/A")
-                    status_box.success(f"✅ Provisioned **{srv['name']}** (ID: `{server_id}`) | SKU: `{srv['sku']}`")
+                    status_box.success(f"✅ Created **{srv['name']}** (ID: `{server_id}`) | SKU: `{srv['sku']}`")
                 elif res.status_code == 402:
-                    msg = res.json().get("message", "Insufficient balance")
-                    status_box.error(f"💳 Payment Required for **{srv['name']}**: {msg}")
+                    status_box.error(f"💳 Payment Required: الرصيد غير كافي لشراء **{srv['name']}**.")
                     logs_and_errors.append({"name": srv["name"], "status_code": 402, "response": res.text})
                 else:
                     status_box.error(f"❌ Failed **{srv['name']}**: HTTP Status {res.status_code}")
                     logs_and_errors.append({
                         "name": srv["name"],
                         "status_code": res.status_code,
-                        "payload": payload,
                         "response": res.text
                     })
             except Exception as e:
-                status_box.error(f"❌ Connection Error on **{srv['name']}**: {str(e)}")
+                status_box.error(f"❌ Error on **{srv['name']}**: {str(e)}")
                 logs_and_errors.append({"name": srv["name"], "status_code": "EXC", "response": str(e)})
 
             progress.progress((idx + 1) / len(server_list))
 
         if logs_and_errors:
             st.markdown("---")
-            st.subheader("🚨 Error Logs & Details")
+            st.subheader("🚨 Error Details")
             for err in logs_and_errors:
                 with st.expander(f"Details: {err['name']} (Status: {err['status_code']})"):
-                    st.write("**Response:**")
-                    try:
-                        st.json(json.loads(err["response"]))
-                    except Exception:
-                        st.code(err["response"], language="html")
+                    st.code(err["response"], language="json" if "{" in err["response"] else "html")
         else:
             st.balloons()
