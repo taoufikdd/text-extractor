@@ -63,7 +63,7 @@ if api_key:
         st.sidebar.metric("Current Balance", f"${user_balance:.2f}")
 
 # ==========================================
-# SECTION 1: BULK DEPLOYMENT (PART DE CREATION)
+# SECTION 1: BULK DEPLOYMENT
 # ==========================================
 st.subheader("🚀 Bulk Deployment Configuration")
 
@@ -160,7 +160,6 @@ st.subheader("Server List & Management")
 if "selected_servers" not in st.session_state:
     st.session_state.selected_servers = set()
 
-# Control Options Bar
 ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     show_terminated = st.checkbox("Show Terminated / Deleted Servers", value=False)
@@ -171,7 +170,6 @@ with ctrl_col2:
 if api_key:
     raw_servers = fetch_user_resources(api_key)
     
-    # Filter Terminated Servers if unchecked
     servers = []
     for s in raw_servers:
         st_val = str(s.get("status", "")).lower()
@@ -182,6 +180,28 @@ if api_key:
     if not servers:
         st.info("No active servers loaded.")
     else:
+        # Callback function لتحديث اختيار الكل
+        def toggle_select_all():
+            if st.session_state.chk_select_all:
+                for s in servers:
+                    srv_id = s.get("id")
+                    if srv_id:
+                        st.session_state.selected_servers.add(srv_id)
+                        st.session_state[f"chk_{srv_id}"] = True
+            else:
+                for s in servers:
+                    srv_id = s.get("id")
+                    if srv_id:
+                        st.session_state.selected_servers.discard(srv_id)
+                        st.session_state[f"chk_{srv_id}"] = False
+
+        # Callback function لتحديث زر الفردي
+        def toggle_individual(srv_id):
+            if st.session_state[f"chk_{srv_id}"]:
+                st.session_state.selected_servers.add(srv_id)
+            else:
+                st.session_state.selected_servers.discard(srv_id)
+
         # Batch Action Bar
         col_sel_count, col_b1, col_b2, col_b3, col_b4 = st.columns([2, 1.5, 1.5, 1.5, 1.5])
         
@@ -222,11 +242,8 @@ if api_key:
         # Table Header
         h_col1, h_col2, h_col3, h_col4, h_col5, h_col6, h_col7, h_col8 = st.columns([0.5, 2, 1.5, 1.5, 2.5, 1.5, 2, 1.5])
         
-        # Select All Checkbox logic
-        all_ids = {s.get("id") for s in servers if s.get("id")}
-        select_all = h_col1.checkbox("", key="chk_select_all")
-        if select_all:
-            st.session_state.selected_servers = set(all_ids)
+        # Select All Checkbox
+        h_col1.checkbox("", key="chk_select_all", on_change=toggle_select_all)
 
         h_col2.write("**Hostname**")
         h_col3.write("**Region**")
@@ -243,17 +260,14 @@ if api_key:
             srv_id = srv.get("id")
             name = srv.get("name", "N/A")
             
-            # Region parsing
             specs = srv.get("specs", {})
             if isinstance(specs, dict):
                 region = specs.get("region", srv.get("region", "N/A"))
             else:
                 region = srv.get("region", "N/A")
 
-            # IP parsing
             ip = srv.get("ip") or srv.get("main_ip") or "N/A"
 
-            # Plan / SKU parsing (Fixing JSON object display issue)
             sku_raw = srv.get("sku") or srv.get("plan")
             if isinstance(sku_raw, dict):
                 plan_display = sku_raw.get("code") or sku_raw.get("name") or "N/A"
@@ -267,19 +281,20 @@ if api_key:
 
             c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([0.5, 2, 1.5, 1.5, 2.5, 1.5, 2, 1.5])
 
-            # Selection Checkbox
-            is_checked = c1.checkbox("", key=f"chk_{srv_id}", value=(srv_id in st.session_state.selected_servers))
-            if is_checked:
-                st.session_state.selected_servers.add(srv_id)
-            else:
-                st.session_state.selected_servers.discard(srv_id)
+            # Row Checkbox with Callback
+            c1.checkbox(
+                "", 
+                key=f"chk_{srv_id}", 
+                value=(srv_id in st.session_state.selected_servers),
+                on_change=toggle_individual,
+                args=(srv_id,)
+            )
 
             c2.write(f"**{name}**")
             c3.write(region)
             c4.code(ip, language="text")
             c5.write(plan_display)
             
-            # Status Badges
             if status in ["active", "running"]:
                 c6.markdown("🟢 `ACTIVE`")
             elif status in ["stopped", "off"]:
@@ -291,7 +306,6 @@ if api_key:
 
             c7.code(ssh_cmd, language="bash")
 
-            # Inline Action Buttons
             btn_col1, btn_col2 = c8.columns(2)
             with btn_col1:
                 if st.button("⏹️", key=f"btn_stop_{srv_id}", help="Stop Server"):
