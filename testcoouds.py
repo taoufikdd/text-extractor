@@ -2,50 +2,43 @@ import streamlit as st
 import requests
 import json
 
-st.set_page_config(page_title="CloudCenmax Bulk Deployer", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="CloudCenmax API Deployer", layout="wide", page_icon="⚡")
 
-st.title("⚡ CloudCenmax Bulk Server Deployment")
-st.markdown("إرسال الطلبات مباشرة عبر Livewire مع التوثيق الكامل بالـ CSRF Token.")
+st.title("⚡ CloudCenmax API Bulk Server Deployment")
+st.markdown("إنشاء السيرفرات دفعة واحدة باستخدام الـ API Key الرسمي.")
 
-# --- Sidebar Authentication ---
-st.sidebar.header("🔑 Authentication Credentials")
-st.sidebar.info("احصل على CSRF Token و Cookie من F12 -> Network عند الكليك على أي زر فـ الموقع.")
-
-csrf_token = st.sidebar.text_input("X-CSRF-TOKEN", type="password", help="رمز CSRF من Request Headers")
-cookie_str = st.sidebar.text_input("Cookie", type="password", help="قيمة Cookie كاملة من Request Headers")
+# --- Sidebar: API Key & Base URL ---
+st.sidebar.header("🔑 API Authentication")
+api_key = st.sidebar.text_input("CloudCenmax API Key", type="password", help="ضع الـ API Key هنا (مثال: ck_...)")
+base_url = st.sidebar.text_input("API Base URL", value="https://cloudcenmax.com/api", help="رابط الـ API الأساسي")
 root_password = st.sidebar.text_input("Root Password", value="qRdkWWKIhbb9q6Nmwi3mfrt", type="password")
 
-LIVEWIRE_URL = "https://cloudcenmax.com/livewire/update"
-
-# --- Test Livewire Connection ---
+# --- Test API Connection Button ---
 if st.sidebar.button("🔌 Test API Connection"):
-    if not csrf_token or not cookie_str:
-        st.sidebar.error("❌ أدخل X-CSRF-TOKEN و Cookie أولاً!")
+    if not api_key:
+        st.sidebar.error("❌ أُدخل الـ API Key أولاً!")
     else:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-CSRF-TOKEN": csrf_token,
-            "X-Livewire": "true",
-            "Content-Type": "application/json",
-            "Accept": "text/html, application/xhtml+xml",
-            "Cookie": cookie_str,
-            "Origin": "https://cloudcenmax.com",
-            "Referer": "https://cloudcenmax.com/deploy"
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
         }
-        payload = {
-            "_token": csrf_token,
-            "components": []
-        }
-        try:
-            res = requests.post(LIVEWIRE_URL, json=payload, headers=headers, timeout=10)
-            if res.status_code == 200:
-                st.sidebar.success("✅ Connected Successfully! (Status 200)")
-            elif res.status_code == 419:
-                st.sidebar.error("❌ Status 419: CSRF Token أو Cookie غير صالحة أو انتهت مدتها!")
-            else:
-                st.sidebar.warning(f"⚠️ Response Status: {res.status_code}")
-        except Exception as e:
-            st.sidebar.error(f"❌ Connection Error: {str(e)}")
+        # نجرب نقطة نهاية عامة (مثل servers أو user)
+        test_endpoints = ["/servers", "/v1/servers", "/user", "/account"]
+        success = False
+        
+        for ep in test_endpoints:
+            try:
+                res = requests.get(f"{base_url.rstrip('/')}{ep}", headers=headers, timeout=5)
+                if res.status_code in [200, 401, 403, 422]:
+                    st.sidebar.success(f"✅ API Reachable! Endpoint found: `{ep}` (Status: {res.status_code})")
+                    success = True
+                    break
+            except Exception:
+                continue
+                
+        if not success:
+            st.sidebar.error("❌ لم يتم العثور على المسار الصحيح. تحقق من الـ API Docs في الموقع.")
 
 # --- Locations Data ---
 LOCATIONS_DATA = {
@@ -116,64 +109,47 @@ for i in range(int(num_servers)):
 
 # --- Execution ---
 if st.button("🔥 Deploy All Servers Now", type="primary"):
-    if not csrf_token or not cookie_str:
-        st.error("❌ أدخل X-CSRF-TOKEN و Cookie أولاً من الـ Sidebar!")
+    if not api_key:
+        st.error("❌ أُدخل الـ API Key أولاً في الـ Sidebar!")
     else:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "X-CSRF-TOKEN": csrf_token,
-            "X-Livewire": "true",
-            "Content-Type": "application/json",
-            "Accept": "text/html, application/xhtml+xml",
-            "Cookie": cookie_str,
-            "Origin": "https://cloudcenmax.com",
-            "Referer": "https://cloudcenmax.com/deploy"
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json"
         }
 
         progress = st.progress(0)
         status_box = st.container()
         logs_and_errors = []
 
+        # محاولة إرسال الطلب لـ /servers (يمكنك تعديلها بناء على الـ Docs)
+        target_url = f"{base_url.rstrip('/')}/servers"
+
         for idx, srv in enumerate(server_list):
             payload = {
-                "_token": csrf_token,
-                "components": [
-                    {
-                        "snapshot": '{"memo":{"name":"deploy-cloud-server"}}',
-                        "updates": {},
-                        "calls": [
-                            {
-                                "path": "",
-                                "method": "deploy",
-                                "params": [
-                                    {
-                                        "hostname": srv["hostname"],
-                                        "location": srv["location"],
-                                        "continent": srv["continent"],
-                                        "country": srv["country"],
-                                        "city": srv["city"],
-                                        "os": "almalinux-8.10",
-                                        "plan": "4vcpu-8gb-80gb",
-                                        "password": root_password,
-                                        "root_password": root_password
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
+                "hostname": srv["hostname"],
+                "name": srv["hostname"],
+                "region": srv["location"],
+                "location": srv["location"],
+                "os": "almalinux-8.10",
+                "plan": "4vcpu-8gb-80gb",
+                "vcpus": 4,
+                "ram": 8192,
+                "disk": 80,
+                "password": root_password,
+                "root_password": root_password
             }
 
             try:
-                res = requests.post(LIVEWIRE_URL, json=payload, headers=headers, timeout=15)
-                if res.status_code == 200:
-                    status_box.success(f"✅ Created **{srv['hostname']}**! (Location: {srv['location']})")
+                res = requests.post(target_url, json=payload, headers=headers, timeout=15)
+                if res.status_code in [200, 201, 202]:
+                    status_box.success(f"✅ Created **{srv['hostname']}** successfully!")
                 else:
                     status_box.error(f"❌ Failed **{srv['hostname']}**: HTTP Status {res.status_code}")
                     logs_and_errors.append({
                         "hostname": srv["hostname"],
                         "status_code": res.status_code,
-                        "url_called": LIVEWIRE_URL,
+                        "url_called": target_url,
                         "payload_sent": payload,
                         "response_body": res.text
                     })
@@ -182,7 +158,7 @@ if st.button("🔥 Deploy All Servers Now", type="primary"):
                 logs_and_errors.append({
                     "hostname": srv["hostname"],
                     "status_code": "EXCEPTION",
-                    "url_called": LIVEWIRE_URL,
+                    "url_called": target_url,
                     "payload_sent": payload,
                     "response_body": str(e)
                 })
@@ -191,7 +167,8 @@ if st.button("🔥 Deploy All Servers Now", type="primary"):
 
         if logs_and_errors:
             st.markdown("---")
-            st.subheader("🚨 Detailed Error Logs")
+            st.subheader("🚨 Detailed Error Logs & Diagnostics")
+            st.info("💡 ملاحظة: إذا ظهر خطأ 404، يرجى النقر على رابط **'Read the API docs'** في أعلى يمين موقع CloudCenmax لمعرفة المسار الصحيح (Endpoint) لإنشاء السيرفرات وإخباري به.")
             for err in logs_and_errors:
                 with st.expander(f"❌ Error Log: {err['hostname']} (Status: {err['status_code']})"):
                     st.write("**URL:**", err["url_called"])
