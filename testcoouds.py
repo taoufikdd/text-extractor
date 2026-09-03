@@ -28,6 +28,36 @@ def check_account_balance(key):
         pass
     return None
 
+@st.cache_data(ttl=300)
+def fetch_os_templates(key):
+    """جلب جميع الـ OS Images المتاحة مباشرة من الـ API"""
+    try:
+        res = requests.get(f"{BASE_URL}/templates", headers=get_headers(key), timeout=10)
+        if res.status_code == 200:
+            data = res.json().get("data", [])
+            templates = {}
+            for item in data:
+                # أخذ الـ code أو slug كـ قيمة والـ name للعرض
+                code = item.get("code") or item.get("slug") or item.get("id")
+                name = item.get("name", code)
+                if code:
+                    templates[name] = code
+            if templates:
+                return templates
+    except Exception:
+        pass
+    
+    # Fallback إذا لم يستجب الـ Endpoint الخاص بالـ templates
+    return {
+        "AlmaLinux 8": "almalinux-8",
+        "AlmaLinux 9": "almalinux-9",
+        "Ubuntu 22.04 LTS": "ubuntu-22.04",
+        "Ubuntu 20.04 LTS": "ubuntu-20.04",
+        "Debian 11": "debian-11",
+        "Debian 12": "debian-12",
+        "CentOS Stream 9": "centos-stream-9"
+    }
+
 def fetch_user_resources(key):
     all_resources = []
     page = 1
@@ -87,8 +117,11 @@ def fetch_catalog(key):
     return all_items
 
 catalog_items = []
+available_templates = {}
+
 if api_key:
     catalog_items = fetch_catalog(api_key)
+    available_templates = fetch_os_templates(api_key)
 
 structured_catalog = {}
 for item in catalog_items:
@@ -129,18 +162,21 @@ if structured_catalog:
 
         col_img, col_pass = st.columns([2, 2])
         with col_img:
-            selected_os = st.selectbox(
+            # العرض الديناميكي للأنظمة المتاحة من الـ API
+            template_label = st.selectbox(
                 "Operating System Image", 
-                ["ubuntu-22.04", "ubuntu-20.04", "debian-11", "debian-12", "centos-7"], 
+                list(available_templates.keys()), 
                 key=f"d_os_{i}"
             )
+            selected_template_code = available_templates[template_label]
+
         with col_pass:
             srv_pass = st.text_input("Root Password", type="password", key=f"d_pass_{i}", value="DefaultPass123!")
 
         server_list.append({
             "name": h_name.strip(), 
             "sku": selected_sku_code,
-            "image": selected_os,
+            "template": selected_template_code,
             "password": srv_pass
         })
 
@@ -152,18 +188,12 @@ if structured_catalog:
             status_box = st.container()
 
             for idx, srv in enumerate(server_list):
-                # Payload شاطر كيحط الـ parameters فجميع الأماكن المتوقعة للـ API
                 payload = {
                     "name": srv["name"], 
                     "sku": srv["sku"], 
-                    "template": srv["image"],
-                    "image": srv["image"],
                     "options": {
-                        "template": srv["image"],
-                        "image": srv["image"],
-                        "os": srv["image"],
-                        "password": srv["password"],
-                        "root_password": srv["password"]
+                        "template": srv["template"],
+                        "password": srv["password"]
                     }
                 }
 
