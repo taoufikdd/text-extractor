@@ -170,25 +170,14 @@ def get_vultr_regions(api_key, proxies):
     return []
 
 def get_vultr_plans(api_key, proxies):
-    """جلب الـ Plans وتصفيتها لإظهار Dedicated CPU فقط"""
+    """جلب جميع الـ Plans المتوفرة فـ Vultr بدون فلترة معقدة لتفادي الأخطاء"""
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         res = requests.get("https://api.vultr.com/v2/plans", headers=headers, proxies=proxies, timeout=12)
         if res.status_code == 200:
             plans = res.json().get("plans", [])
-            
-            # فلتار الـ Plans لإبقاء Dedicated CPU فقط (vx1, vxd, dedicated)
-            dedicated_plans = []
-            for p in plans:
-                p_id = p.get("id", "").lower()
-                p_type = p.get("type", "").lower()
-                
-                # التحقق هل نوع الخطة ينتمي لـ Dedicated CPU
-                if "dedicated" in p_type or p_id.startswith("vx1") or p_id.startswith("vxd"):
-                    dedicated_plans.append(p)
-            
-            # ترتيب الحطط حسب السعر
-            sorted_plans = sorted(dedicated_plans, key=lambda x: x.get("monthly_cost", 0))
+            # ترتيب الخطط حسب السعر الشهري
+            sorted_plans = sorted(plans, key=lambda x: x.get("monthly_cost", 0))
             return sorted_plans
     except Exception:
         pass
@@ -385,9 +374,9 @@ with tab1:
     else:
         st.info("No active instances found in this account.")
 
-# --- TAB 2: إنشاء سيرفرات جديدة (Dedicated CPU فقط) ---
+# --- TAB 2: إنشاء سيرفرات جديدة ---
 with tab2:
-    st.subheader("Deploy New Servers (Dedicated CPU)")
+    st.subheader("Deploy New Servers")
     
     if not is_healthy:
         st.warning("⚠️ You cannot deploy new servers because the selected account has errors or is suspended.")
@@ -402,15 +391,15 @@ with tab2:
             regions_list = get_vultr_regions(current_api_key, current_proxies)
             
             if not plans_list:
-                st.error("No Dedicated CPU Plans found or API error.")
+                st.error("No Plans found or API error.")
             else:
                 plan_options = {
-                    f"🔥 {p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} Dedicated vCPU | ${p.get('monthly_cost')}/mo": p.get('id')
+                    f"🔥 {p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} vCPU | Type: {p.get('type')} | ${p.get('monthly_cost')}/mo": p.get('id')
                     for p in plans_list
                 }
                 
                 selected_plan_label = st.selectbox(
-                    "⚙️ Select Dedicated CPU Plan:",
+                    "⚙️ Select Plan:",
                     options=list(plan_options.keys()),
                     index=0
                 )
