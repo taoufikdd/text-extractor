@@ -1,12 +1,8 @@
 import base64
 import json
 import os
-import random
-import re
 import time
-import urllib.parse
 import requests
-from bs4 import BeautifulSoup
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 1. إعدادات الصفحة والتصاميم
 # ==========================================
 st.set_page_config(
-    page_title="Vultr Multi-Account Manager",
+    page_title="Vultr Multi-Account Manager — 4 Plan Types",
     page_icon="🖥️",
     layout="wide"
 )
@@ -170,18 +166,130 @@ def get_vultr_regions(api_key, proxies):
     return []
 
 def get_vultr_plans(api_key, proxies):
-    """جلب جميع الـ Plans المتوفرة فـ Vultr بدون فلترة معقدة لتفادي الأخطاء"""
+    """Fetch all normal Cloud/Compute plans."""
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        res = requests.get("https://api.vultr.com/v2/plans", headers=headers, proxies=proxies, timeout=12)
+        res = requests.get(
+            "https://api.vultr.com/v2/plans",
+            headers=headers,
+            proxies=proxies,
+            timeout=15
+        )
         if res.status_code == 200:
             plans = res.json().get("plans", [])
-            # ترتيب الخطط حسب السعر الشهري
-            sorted_plans = sorted(plans, key=lambda x: x.get("monthly_cost", 0))
-            return sorted_plans
+            return sorted(plans, key=lambda x: x.get("monthly_cost", 0) or 0)
     except Exception:
         pass
     return []
+
+
+def get_vultr_bare_metal_plans(api_key, proxies):
+    """Fetch Bare Metal plans."""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get(
+            "https://api.vultr.com/v2/bare-metals/plans",
+            headers=headers,
+            proxies=proxies,
+            timeout=15
+        )
+        if res.status_code == 200:
+            data = res.json()
+            plans = data.get("plans", data.get("bare_metal_plans", []))
+            return sorted(plans, key=lambda x: x.get("monthly_cost", 0) or 0)
+    except Exception:
+        pass
+    return []
+
+
+PLAN_CATEGORIES = {
+    "Shared CPU": {
+        "prefixes": ("vc2-",),
+        "description": "Shared CPU / regular Cloud Compute"
+    },
+    "Dedicated CPU": {
+        "prefixes": ("vdc-", "vhf-", "vhp-", "voc-"),
+        "description": "Dedicated / High Frequency / High Performance CPU plans"
+    },
+    "Cloud GPU": {
+        "prefixes": ("vcg-",),
+        "description": "Cloud GPU instances"
+    },
+    "Bare Metal": {
+        "prefixes": ("vbm-",),
+        "description": "Single-tenant physical servers"
+    },
+}
+
+
+def get_plan_category(plan):
+    """Classify Vultr plans using their documented family prefixes/types."""
+    plan_id = str(plan.get("id", "")).lower()
+    ptype = str(plan.get("type", "")).lower()
+
+    if plan_id.startswith("vbm-") or ptype == "vbm":
+        return "Bare Metal"
+    if plan_id.startswith("vcg-") or ptype == "vcg":
+        return "Cloud GPU"
+    if plan_id.startswith("vc2-") or ptype == "vc2":
+        return "Shared CPU"
+    if plan_id.startswith(("vdc-", "vhf-", "vhp-", "voc-")):
+        return "Dedicated CPU"
+
+    if any(x in ptype for x in ("gpu", "vcg")):
+        return "Cloud GPU"
+    if any(x in ptype for x in ("bare", "vbm")):
+        return "Bare Metal"
+    if ptype in ("vdc", "vhf", "vhp", "voc", "dedicated"):
+        return "Dedicated CPU"
+
+    return None
+
+
+def get_plans_for_category(api_key, proxies, category):
+    if category == "Bare Metal":
+        plans = get_vultr_bare_metal_plans(api_key, proxies)
+    else:
+        plans = get_vultr_plans(api_key, proxies)
+
+    return [p for p in plans if get_plan_category(p) == category]
+
+
+def get_vultr_regions(api_key, proxies):
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get(
+            "https://api.vultr.com/v2/regions",
+            headers=headers,
+            proxies=proxies,
+            timeout=15
+        )
+        if res.status_code == 200:
+            return sorted(
+                res.json().get("regions", []),
+                key=lambda x: x.get("city", "")
+            )
+    except Exception:
+        pass
+    return []
+
+
+def get_regions_for_plan(regions, plan):
+    """Use the plan's location list when supplied by the API."""
+    locations = plan.get("locations")
+
+    if isinstance(locations, list) and locations:
+        location_ids = {str(x) for x in locations}
+        filtered = [
+            r for r in regions
+            if str(r.get("id")) in location_ids
+        ]
+        if filtered:
+            return sorted(filtered, key=lambda x: x.get("city", ""))
+
+    # If the API does not include location metadata, show the full region list.
+    return sorted(regions, key=lambda x: x.get("city", ""))
+
 
 def attach_dedicated_ip(api_key, instance_id, region_code, proxies):
     headers = {
@@ -263,6 +371,107 @@ def deploy_single_server(counter, code, os_id, plan_id, need_dedicated_ip, curre
             return False, None, f"HTTP {res.status_code}: {res.text}"
     except Exception as e:
         return False, None, str(e)
+
+def deploy_single_bare_metal(counter, code, os_id, plan_id, current_api_key, current_proxies):
+    """Create one Vultr Bare Metal server."""
+    hostname = f"vultr-baremetal-{counter}"
+    headers = {
+        "Authorization": f"Bearer {current_api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "region": code,
+        "plan": plan_id,
+        "os_id": os_id,
+        "user_data": USER_DATA_B64,
+        "hostname": hostname,
+        "label": hostname,
+        "enable_ipv6": True
+    }
+
+    try:
+        res = requests.post(
+            "https://api.vultr.com/v2/bare-metals",
+            headers=headers,
+            json=payload,
+            proxies=current_proxies,
+            timeout=20
+        )
+
+        if res.status_code in [200, 202]:
+            data = res.json()
+            bm = data.get("bare_metal", data.get("baremetal", data))
+            inst_id = bm.get("id")
+
+            if not inst_id:
+                return False, None, f"API returned no Bare Metal ID: {res.text}"
+
+            for _ in range(30):
+                try:
+                    check = requests.get(
+                        f"https://api.vultr.com/v2/bare-metals/{inst_id}",
+                        headers=headers,
+                        proxies=current_proxies,
+                        timeout=12
+                    )
+                    if check.status_code == 200:
+                        current = check.json().get(
+                            "bare_metal",
+                            check.json().get("baremetal", {})
+                        )
+                        ip = current.get("main_ip", "")
+                        if ip and ip != "0.0.0.0":
+                            password = current.get("default_password") or DEFAULT_ROOT_PASSWORD
+                            return True, f"{ip},22,root,{password}", None
+                except Exception:
+                    pass
+                time.sleep(3)
+
+            return False, None, "Bare Metal created, but public IP was not available before timeout."
+
+        return False, None, f"HTTP {res.status_code}: {res.text}"
+
+    except Exception as e:
+        return False, None, str(e)
+
+
+def get_all_bare_metals(api_key, proxies):
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.get(
+            "https://api.vultr.com/v2/bare-metals",
+            headers=headers,
+            proxies=proxies,
+            timeout=15
+        )
+        if res.status_code == 200:
+            data = res.json()
+            return True, data.get("bare_metals", data.get("baremetal", [])), None
+        if res.status_code == 403:
+            return False, [], "Bare Metal access forbidden (403)."
+        if res.status_code == 401:
+            return False, [], "Invalid API Key (401 Unauthorized)"
+        return False, [], f"Error {res.status_code}: {res.text}"
+    except Exception as e:
+        return False, [], str(e)
+
+
+def delete_single_bare_metal(inst_id, api_key, proxies):
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        res = requests.delete(
+            f"https://api.vultr.com/v2/bare-metals/{inst_id}",
+            headers=headers,
+            proxies=proxies,
+            timeout=15
+        )
+        if res.status_code in [200, 202, 204]:
+            return True, inst_id
+        return False, inst_id
+    except Exception:
+        return False, inst_id
+
 
 def delete_single_server(inst_id, current_api_key, current_proxies):
     headers = {"Authorization": f"Bearer {current_api_key}"}
@@ -350,17 +559,28 @@ tab1, tab2, tab3 = st.tabs(["📊 Active Instances", "🚀 Deploy Servers", "�
 # --- TAB 1: عرض السيرفرات النشطة ---
 with tab1:
     st.subheader("Active Instances")
+
     if st.button("🔄 Refresh Instances"):
         st.rerun()
-        
-    success, instances, err_msg = get_all_instances(current_api_key, current_proxies)
-    
+
+    success, cloud_instances, err_msg = get_all_instances(
+        current_api_key, current_proxies
+    )
+    bm_success, bare_metals, bm_err = get_all_bare_metals(
+        current_api_key, current_proxies
+    )
+
     if not success:
-        st.error(f"🚨 Failed to load instances: {err_msg}")
-    elif instances:
-        table_data = []
-        for inst in instances:
+        st.error(f"🚨 Failed to load Cloud instances: {err_msg}")
+    if not bm_success:
+        st.warning(f"⚠️ Failed to load Bare Metal instances: {bm_err}")
+
+    table_data = []
+
+    if success:
+        for inst in cloud_instances:
             table_data.append({
+                "Type": "Cloud",
                 "ID": inst.get("id"),
                 "IPv4 Address": inst.get("main_ip", "N/A"),
                 "IPv6 Address": inst.get("v6_main_ip", "N/A"),
@@ -370,6 +590,22 @@ with tab1:
                 "RAM": inst.get("ram"),
                 "vCPU": inst.get("vcpu")
             })
+
+    if bm_success:
+        for inst in bare_metals:
+            table_data.append({
+                "Type": "Bare Metal",
+                "ID": inst.get("id"),
+                "IPv4 Address": inst.get("main_ip", "N/A"),
+                "IPv6 Address": inst.get("v6_main_ip", "N/A"),
+                "Status": inst.get("status"),
+                "Region": inst.get("region"),
+                "Label": inst.get("label", "N/A"),
+                "RAM": inst.get("ram"),
+                "vCPU": inst.get("cpu_count")
+            })
+
+    if table_data:
         st.dataframe(table_data, use_container_width=True)
     else:
         st.info("No active instances found in this account.")
@@ -377,223 +613,356 @@ with tab1:
 # --- TAB 2: إنشاء سيرفرات جديدة ---
 with tab2:
     st.subheader("Deploy New Servers")
-    
+
     if not is_healthy:
-        st.warning("⚠️ You cannot deploy new servers because the selected account has errors or is suspended.")
+        st.warning(
+            "⚠️ You cannot deploy new servers because the selected account "
+            "has errors or is suspended."
+        )
     else:
-        os_id, os_name = get_centos_os_id(current_api_key, current_proxies)
+        plan_type = st.radio(
+            "🖥️ Server Type",
+            ["Shared CPU", "Dedicated CPU", "Cloud GPU", "Bare Metal"],
+            horizontal=True
+        )
+
+        st.caption(PLAN_CATEGORIES[plan_type]["description"])
+
+        is_bare_metal = plan_type == "Bare Metal"
+
+        os_id, os_name = get_centos_os_id(
+            current_api_key, current_proxies
+        )
+
         if not os_id:
-            st.error("Could not fetch CentOS OS ID. Check API Key/Proxy.")
+            st.error(
+                "Could not fetch the selected CentOS OS ID. "
+                "Check API Key/Proxy and OS availability."
+            )
         else:
-            st.success(f"Target OS: **{os_name}** (ID: `{os_id}`)")
-            
-            plans_list = get_vultr_plans(current_api_key, current_proxies)
-            regions_list = get_vultr_regions(current_api_key, current_proxies)
-            
+            st.success(
+                f"Target OS: **{os_name}** (ID: `{os_id}`)"
+            )
+
+            plans_list = get_plans_for_category(
+                current_api_key,
+                current_proxies,
+                plan_type
+            )
+            regions_list = get_vultr_regions(
+                current_api_key,
+                current_proxies
+            )
+
             if not plans_list:
-                st.error("No Plans found or API error.")
+                st.error(
+                    f"No {plan_type} plans found or the API returned no plans."
+                )
+            elif not regions_list:
+                st.error("No Vultr regions were returned by the API.")
             else:
+                def plan_label(p):
+                    pid = p.get("id", "N/A")
+                    ram = p.get("ram", p.get("memory", "N/A"))
+                    vcpu = p.get("vcpu_count", p.get("cpu_count", "N/A"))
+                    disk = p.get("disk", "N/A")
+                    monthly = p.get("monthly_cost", "N/A")
+
+                    extra = ""
+                    if p.get("gpu_type"):
+                        extra = f" | GPU: {p.get('gpu_type')}"
+                    elif p.get("cpu_model"):
+                        extra = f" | CPU: {p.get('cpu_model')}"
+
+                    return (
+                        f"🔥 {pid} — {ram}MB RAM | "
+                        f"{vcpu} CPU | Disk: {disk} | "
+                        f"${monthly}/mo{extra}"
+                    )
+
                 plan_options = {
-                    f"🔥 {p.get('id')} — {p.get('ram')}MB RAM | {p.get('vcpu_count')} vCPU | Type: {p.get('type')} | ${p.get('monthly_cost')}/mo": p.get('id')
-                    for p in plans_list
+                    plan_label(p): p for p in plans_list
                 }
-                
+
                 selected_plan_label = st.selectbox(
-                    "⚙️ Select Plan:",
+                    f"⚙️ Select {plan_type} Plan:",
                     options=list(plan_options.keys()),
                     index=0
                 )
-                selected_plan_id = plan_options[selected_plan_label]
+                selected_plan = plan_options[selected_plan_label]
+                selected_plan_id = selected_plan.get("id")
 
-                need_dedicated_ip = st.checkbox("📌 Attach Additional Dedicated Public IPv4 (+ $3/mo approx)", value=False)
+                compatible_regions = get_regions_for_plan(
+                    regions_list, selected_plan
+                )
 
-                region_options = {f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]": r.get('id') for r in regions_list}
-                selected_region_labels = st.multiselect("Select Target Regions:", list(region_options.keys()))
-                server_count = st.number_input("Total Number of Servers:", min_value=1, max_value=50, value=1)
-                
-                if st.button("🚀 Start Deployment"):
+                region_options = {
+                    f"{r.get('city')} ({r.get('country')}) [{r.get('id')}]":
+                    r.get("id")
+                    for r in compatible_regions
+                }
+
+                selected_region_labels = st.multiselect(
+                    "🌍 Select Target Regions:",
+                    list(region_options.keys()),
+                    help=(
+                        "Regions are loaded dynamically. If Vultr returns "
+                        "location data for the selected plan, only compatible "
+                        "regions are displayed."
+                    )
+                )
+
+                server_count = st.number_input(
+                    "Total Number of Servers:",
+                    min_value=1,
+                    max_value=50,
+                    value=1
+                )
+
+                need_dedicated_ip = False
+                if not is_bare_metal:
+                    need_dedicated_ip = st.checkbox(
+                        "📌 Attach Additional Dedicated Public IPv4 (+ $3/mo approx)",
+                        value=False
+                    )
+
+                if st.button("🚀 Start Deployment", type="primary"):
                     if not selected_region_labels:
                         st.error("Please select at least one region.")
                     else:
-                        selected_codes = [region_options[lbl] for lbl in selected_region_labels]
+                        selected_codes = [
+                            region_options[label]
+                            for label in selected_region_labels
+                        ]
+
                         num_regions = len(selected_codes)
                         base_per = server_count // num_regions
                         remainder = server_count % num_regions
-                        
+
                         status_box = st.empty()
                         progress_bar = st.progress(0)
-                        
+
                         tasks = []
                         counter = 0
+
                         for idx, code in enumerate(selected_codes):
-                            count_for_reg = base_per + (1 if idx < remainder else 0)
+                            count_for_reg = (
+                                base_per + (1 if idx < remainder else 0)
+                            )
                             for _ in range(count_for_reg):
                                 counter += 1
                                 tasks.append((counter, code))
-                        
+
                         results = []
                         completed_count = 0
-                        status_box.info(f"⚡ Deploying {server_count} server(s) using Plan [{selected_plan_id}] in parallel...")
 
-                        with ThreadPoolExecutor(max_workers=min(10, server_count)) as executor:
-                            futures = [
-                                executor.submit(deploy_single_server, c, reg, os_id, selected_plan_id, need_dedicated_ip, current_api_key, current_proxies)
-                                for c, reg in tasks
-                            ]
-                            
+                        status_box.info(
+                            f"⚡ Deploying {server_count} server(s) "
+                            f"using {plan_type} / {selected_plan_id} in parallel..."
+                        )
+
+                        with ThreadPoolExecutor(
+                            max_workers=min(10, server_count)
+                        ) as executor:
+                            futures = []
+
+                            for c, reg in tasks:
+                                if is_bare_metal:
+                                    futures.append(
+                                        executor.submit(
+                                            deploy_single_bare_metal,
+                                            c,
+                                            reg,
+                                            os_id,
+                                            selected_plan_id,
+                                            current_api_key,
+                                            current_proxies
+                                        )
+                                    )
+                                else:
+                                    futures.append(
+                                        executor.submit(
+                                            deploy_single_server,
+                                            c,
+                                            reg,
+                                            os_id,
+                                            selected_plan_id,
+                                            need_dedicated_ip,
+                                            current_api_key,
+                                            current_proxies
+                                        )
+                                    )
+
                             for future in as_completed(futures):
                                 success_dep, formatted_res, err = future.result()
                                 completed_count += 1
-                                progress_bar.progress(completed_count / server_count)
-                                
+                                progress_bar.progress(
+                                    completed_count / server_count
+                                )
+
                                 if success_dep and formatted_res:
                                     results.append(formatted_res)
-                                    with open("vultr_servers.txt", "a", encoding="utf-8") as f_out:
+
+                                    output_file = (
+                                        "vultr_bare_metal_servers.txt"
+                                        if is_bare_metal
+                                        else "vultr_servers.txt"
+                                    )
+
+                                    with open(
+                                        output_file,
+                                        "a",
+                                        encoding="utf-8"
+                                    ) as f_out:
                                         f_out.write(formatted_res + "\n")
                                 else:
                                     st.error(f"Deployment Error: {err}")
-                        
+
                         status_box.success("🎉 Deployment Complete!")
-                        st.text_area("Created Servers List (ipv4,port,user,pass):", value="\n".join(results), height=150)
+
+                        st.text_area(
+                            "Created Servers List (ipv4,port,user,pass):",
+                            value="\n".join(results),
+                            height=180
+                        )
 
 # --- TAB 3: حذف السيرفرات ---
 with tab3:
-    st.subheader("Delete Instances")
-    del_mode = st.radio("Delete Option:", [
-        "☑️ Checkbox Selection (Select & Delete)", 
-        "📝 Paste Specific IPs", 
-        "🔥 DANGER: Wipe ALL Instances"
-    ])
-    
-    if del_mode == "☑️ Checkbox Selection (Select & Delete)":
-        
-        if f"cached_instances_{selected_acc_name}" not in st.session_state or st.button("🔄 Reload Server List"):
-            _, st.session_state[f"cached_instances_{selected_acc_name}"], _ = get_all_instances(current_api_key, current_proxies)
-            
-        instances = st.session_state.get(f"cached_instances_{selected_acc_name}", [])
-        
-        if not instances:
-            st.info("No active instances found in this account.")
-        else:
-            col_btn1, col_btn2, _ = st.columns([1, 1, 3])
-            with col_btn1:
-                if st.button("✅ Select All"):
-                    for inst in instances:
-                        st.session_state[f"form_chk_{inst.get('id')}"] = True
-                    st.rerun()
-            with col_btn2:
-                if st.button("❌ Unselect All"):
-                    for inst in instances:
-                        st.session_state[f"form_chk_{inst.get('id')}"] = False
-                    st.rerun()
+    st.subheader("Delete Servers")
+
+    delete_scope = st.radio(
+        "Resource Type:",
+        ["Cloud Instances", "Bare Metal", "Both"],
+        horizontal=True
+    )
+
+    if delete_scope in ["Cloud Instances", "Both"]:
+        cloud_ok, cloud_instances, cloud_err = get_all_instances(
+            current_api_key, current_proxies
+        )
+    else:
+        cloud_ok, cloud_instances, cloud_err = True, [], None
+
+    if delete_scope in ["Bare Metal", "Both"]:
+        bm_ok, bare_metals, bm_err = get_all_bare_metals(
+            current_api_key, current_proxies
+        )
+    else:
+        bm_ok, bare_metals, bm_err = True, [], None
+
+    if not cloud_ok:
+        st.error(f"Cloud list error: {cloud_err}")
+    if not bm_ok:
+        st.error(f"Bare Metal list error: {bm_err}")
+
+    combined = []
+
+    if cloud_ok:
+        for inst in cloud_instances:
+            combined.append({
+                "resource_type": "Cloud",
+                "id": inst.get("id"),
+                "ip": inst.get("main_ip", "N/A"),
+                "label": inst.get("label", "N/A"),
+                "region": inst.get("region", "N/A")
+            })
+
+    if bm_ok:
+        for inst in bare_metals:
+            combined.append({
+                "resource_type": "Bare Metal",
+                "id": inst.get("id"),
+                "ip": inst.get("main_ip", "N/A"),
+                "label": inst.get("label", "N/A"),
+                "region": inst.get("region", "N/A")
+            })
+
+    if not combined:
+        st.info("No servers found.")
+    else:
+        if st.button("🔄 Reload Server List"):
+            st.rerun()
+
+        st.markdown("---")
+        selected = {}
+
+        with st.form("delete_servers_form"):
+            st.write("Select the servers you want to delete:")
+
+            for inst in combined:
+                key = f"delete_{inst['resource_type']}_{inst['id']}"
+                selected[key] = st.checkbox(
+                    f"🖥️ {inst['resource_type']} | "
+                    f"**{inst['label']}** | "
+                    f"IP: `{inst['ip']}` | "
+                    f"Region: `{inst['region']}`",
+                    key=key
+                )
 
             st.markdown("---")
+            submit_delete = st.form_submit_button(
+                "🗑️ Delete Selected Servers",
+                type="primary"
+            )
 
-            with st.form("delete_servers_form"):
-                st.write("Select the servers you want to delete:")
-                
-                checkbox_states = {}
-                for inst in instances:
-                    inst_id = inst.get("id")
-                    ip = inst.get("main_ip", "N/A")
-                    label = inst.get("label", "N/A")
-                    region = inst.get("region", "N/A")
-                    
-                    chk_key = f"form_chk_{inst_id}"
-                    if chk_key not in st.session_state:
-                        st.session_state[chk_key] = False
+        if submit_delete:
+            targets = [
+                inst for inst in combined
+                if selected.get(
+                    f"delete_{inst['resource_type']}_{inst['id']}",
+                    False
+                )
+            ]
 
-                    checkbox_states[inst_id] = (
-                        st.checkbox(
-                            f"🖥️ **{label}** | IP: `{ip}` | Region: `{region}`", 
-                            key=chk_key
-                        ),
-                        ip
-                    )
-                
-                st.markdown("---")
-                submit_delete = st.form_submit_button("🗑️ Delete Selected Servers", type="primary")
-            
-            if submit_delete:
-                selected_to_delete = [(inst_id, ip) for inst_id, (is_checked, ip) in checkbox_states.items() if is_checked]
-                
-                if not selected_to_delete:
-                    st.warning("Please select at least one server to delete.")
-                else:
-                    status_del = st.empty()
-                    status_del.info(f"⚡ Deleting {len(selected_to_delete)} server(s) in parallel...")
-                    
-                    success_count = 0
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = {
-                            executor.submit(delete_single_server, inst_id, current_api_key, current_proxies): ip 
-                            for inst_id, ip in selected_to_delete
-                        }
-                        for future in as_completed(futures):
-                            ip = futures[future]
-                            success_del, _ = future.result()
-                            if success_del:
-                                st.success(f"✅ Deleted server: {ip}")
-                                success_count += 1
-                            else:
-                                st.error(f"❌ Failed to delete server: {ip}")
-                    
-                    status_del.success(f"Process finished! Total deleted: {success_count}")
-                    _, st.session_state[f"cached_instances_{selected_acc_name}"], _ = get_all_instances(current_api_key, current_proxies)
-                    time.sleep(1)
-                    st.rerun()
-
-    elif del_mode == "📝 Paste Specific IPs":
-        ips_input = st.text_area("Enter IP addresses (one per line or comma separated):")
-        if st.button("🗑️ Delete Specified Servers"):
-            raw_ips = [ip.strip().split(",")[0] for line in ips_input.splitlines() for ip in line.split(",") if ip.strip()]
-            if not raw_ips:
-                st.error("Please enter at least one IP.")
+            if not targets:
+                st.warning("Please select at least one server.")
             else:
-                _, instances, _ = get_all_instances(current_api_key, current_proxies)
-                ip_to_id = {inst.get("main_ip"): inst.get("id") for inst in instances if inst.get("main_ip")}
-                
-                targets = [(ip_to_id[target_ip], target_ip) for target_ip in raw_ips if target_ip in ip_to_id]
-                missing = [target_ip for target_ip in raw_ips if target_ip not in ip_to_id]
-                
-                for m_ip in missing:
-                    st.warning(f"IP {m_ip} not found in active servers.")
-                
-                if targets:
-                    success_count = 0
-                    with ThreadPoolExecutor(max_workers=10) as executor:
-                        futures = {
-                            executor.submit(delete_single_server, inst_id, current_api_key, current_proxies): target_ip 
-                            for inst_id, target_ip in targets
-                        }
-                        for future in as_completed(futures):
-                            target_ip = futures[future]
-                            success_del, _ = future.result()
-                            if success_del:
-                                st.success(f"Deleted IP: {target_ip}")
-                                success_count += 1
-                            else:
-                                st.error(f"Failed to delete {target_ip}")
-                    st.info(f"Process complete. Deleted {success_count} server(s).")
-                
-    else:
-        st.error("⚠️ WARNING: This will permanently delete ALL instances in the selected account!")
-        confirm_code = st.text_input("Type 'DELETE ALL' to confirm:")
-        if st.button("🔥 WIPE ALL SERVERS NOW"):
-            if confirm_code == "DELETE ALL":
-                _, instances, _ = get_all_instances(current_api_key, current_proxies)
-                deleted = 0
-                with ThreadPoolExecutor(max_workers=15) as executor:
-                    futures = [
-                        executor.submit(delete_single_server, inst.get("id"), current_api_key, current_proxies)
-                        for inst in instances
-                    ]
-                    for future in as_completed(futures):
-                        success_del, _ = future.result()
-                        if success_del:
-                            deleted += 1
-                st.success(f"Total Wiped: {deleted} instances.")
+                status_del = st.empty()
+                status_del.info(
+                    f"⚡ Deleting {len(targets)} server(s) in parallel..."
+                )
+
+                success_count = 0
+
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    future_map = {}
+
+                    for inst in targets:
+                        if inst["resource_type"] == "Bare Metal":
+                            future = executor.submit(
+                                delete_single_bare_metal,
+                                inst["id"],
+                                current_api_key,
+                                current_proxies
+                            )
+                        else:
+                            future = executor.submit(
+                                delete_single_server,
+                                inst["id"],
+                                current_api_key,
+                                current_proxies
+                            )
+
+                        future_map[future] = inst
+
+                    for future in as_completed(future_map):
+                        inst = future_map[future]
+                        ok_del, _ = future.result()
+
+                        if ok_del:
+                            st.success(
+                                f"✅ Deleted {inst['resource_type']}: {inst['ip']}"
+                            )
+                            success_count += 1
+                        else:
+                            st.error(
+                                f"❌ Failed to delete "
+                                f"{inst['resource_type']}: {inst['ip']}"
+                            )
+
+                status_del.success(
+                    f"Process finished! Total deleted: {success_count}"
+                )
                 time.sleep(1)
                 st.rerun()
-            else:
-                st.error("Confirmation text mismatch.")
+
